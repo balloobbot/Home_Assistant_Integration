@@ -8,6 +8,9 @@ from typing import Final
 
 import async_timeout
 import requests
+from epaper_dithering import DitherMode
+from homeassistant.components.bluetooth import async_ble_device_from_address
+from py_atc_ble_oepl import ATCDevice, ATCError
 from requests_toolbelt import MultipartEncoder
 from PIL import Image
 
@@ -20,11 +23,6 @@ from .ble import BLEConnection, BLEImageUploader, BLEDeviceMetadata, get_protoco
     BLETimeoutError, BLEProtocolError
 
 _LOGGER: Final = logging.getLogger(__name__)
-
-DITHER_DISABLED = 0
-DITHER_FLOYD_BURKES = 1
-DITHER_ORDERED = 2
-DITHER_DEFAULT = DITHER_ORDERED
 
 MAX_RETRIES = 3
 INITIAL_BACKOFF = 2  # seconds
@@ -312,6 +310,46 @@ async def upload_to_hub(hub, entity_id: str, img: bytes, dither: int, ttl: int,
                 translation_key="image_upload_failed",
                 translation_placeholders={"entity_id": entity_id, "error": str(err)}
             ) from err
+
+async def upload_to_atc_ble(hass: HomeAssistant, entity_id: str, img: bytes, dither_mode: DitherMode = DitherMode.ORDERED) -> None:
+    """Upload an image to ATC BLE tags using the py-atc-ble-oepl library.
+
+    Replaces the internal block based upload for ATC devices.
+    The library handles connection, dithering, compression and image rotation internally.
+    """
+    mac = entity_id.split(".")[1].upper()
+    _LOGGER.debug("Starting ATC BLE upload for %s (MAC: %s)", entity_id, mac)
+
+    try:
+        ble_device = async_ble_device_from_address(hass, mac, connectable=True)
+        async with ATCDevice(mac, ble_device) as device:
+            success = await device.upload_image(
+                img,
+                dither_mode=dither_mode,
+            )
+        if not success:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ble_upload_failed",
+                translation_placeholders={"entity_id": entity_id}
+            )
+        async_dispatcher_send(hass, f"{SIGNAL_TAG_IMAGE_UPDATE}_{mac}", img)
+
+    except ATCError as err:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="ble_upload_failed",
+            translation_placeholders={"entity_id": entity_id,}
+        ) from err
+    except HomeAssistantError:
+        raise
+    except Exception as err:
+        _LOGGER.error("Unexpected error during ATC BLE upload for %s: %s", entity_id, str(err), exc_info=True)
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="unexpected_ble_upload_error",
+            translation_placeholders={"entity_id": entity_id, "error": str(err)},
+        ) from err
 
 
 async def upload_to_ble_block(hass: HomeAssistant, entity_id: str, img: bytes, dither: int = 2) -> None:

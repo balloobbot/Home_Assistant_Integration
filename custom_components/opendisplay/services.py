@@ -13,11 +13,20 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .coordinator import Hub
 from .ble import BLEConnectionError, BLETimeoutError, BLEProtocolError, BLEDeviceMetadata
 from .const import DOMAIN, SIGNAL_TAG_IMAGE_UPDATE
+from epaper_dithering import DitherMode
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from odl_renderer import generate_image
 from .runtime_data import OpenDisplayBLERuntimeData
 from .tag_types import get_tag_types_manager
-from .upload import create_upload_queues, DITHER_DEFAULT, upload_to_ble_direct, upload_to_ble_block, upload_to_hub
+from .upload import create_upload_queues, upload_to_ble_direct, upload_to_ble_block, upload_to_hub, upload_to_atc_ble
+
+_LEGACY_DITHER_MAP = {"0": DitherMode.NONE, "1": DitherMode.BURKES, "2": DitherMode.ORDERED}
+
+
+def _parse_dither_mode(value: str) -> DitherMode:
+    if str(value) in _LEGACY_DITHER_MAP:
+        return _LEGACY_DITHER_MAP[str(value)]
+    return DitherMode[str(value).upper()]
 from .util import is_ble_entry, get_hub_from_hass, rgb_to_rgb332, int_to_hex_string, \
     is_ble_device, get_mac_from_entity_id
 
@@ -419,7 +428,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 return
 
             # Upload image
-            dither = int(service.data.get("dither", DITHER_DEFAULT))
+            dither_mode = _parse_dither_mode(service.data.get("dither", "ordered"))
 
             refresh_type = int(service.data.get("refresh_type", 0))
 
@@ -448,7 +457,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 upload_method = metadata.get_best_upload_method(len(image_data))
 
                 if upload_method == "block":
-                    await ble_upload_queue.add_to_queue(upload_to_ble_block, hass, entity_id, image_data, dither)
+                    await ble_upload_queue.add_to_queue(upload_to_atc_ble, hass, entity_id, image_data, dither_mode)
                 else:
                     await ble_upload_queue.add_to_queue(
                         upload_to_ble_direct,
@@ -456,7 +465,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         entity_id,
                         image_data,
                         upload_method == "direct_write_compressed",
-                        dither,
+                        dither_mode.value,
                         refresh_type
                     )
             else:
@@ -465,7 +474,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 ap_lut_mapping = {0: 1, 1: 3, 2: 2, 3: 0}
                 ap_lut = ap_lut_mapping.get(refresh_type, 1)  # Default to 1 (full) if invalid
                 await hub_upload_queue.add_to_queue(
-                    upload_to_hub, hub, entity_id, image_data, dither,
+                    upload_to_hub, hub, entity_id, image_data, dither_mode.value,
                     service.data.get("ttl", 60),
                     service.data.get("preload_type", 0),
                     service.data.get("preload_lut", 0),

@@ -38,16 +38,28 @@ drawcustom:
       name: Dither
       description: Dithering option to use
       required: true
-      default: 2
+      default: "ordered"
       selector:
         select:
           options:
             - label: "No dithering"
-              value: "0"
+              value: "none"
             - label: "Burkes (best for photos)"
-              value: "1"
+              value: "burkes"
             - label: "Ordered (best for halftone colors)"
-              value: "2"
+              value: "ordered"
+            - label: "Floyd-Steinberg"
+              value: "floyd_steinberg"
+            - label: "Atkinson"
+              value: "atkinson"
+            - label: "Stucki"
+              value: "stucki"
+            - label: "Sierra"
+              value: "sierra"
+            - label: "Sierra Lite"
+              value: "sierra_lite"
+            - label: "Jarvis-Judice-Ninke"
+              value: "jarvis_judice_ninke"
     ttl:
       name: Time to live
       description: >
