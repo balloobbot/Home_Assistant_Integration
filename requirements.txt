@@ -7,3 +7,4 @@ websockets
 websocket-client==1.7.0
 bleak>=1.0.1
 odl-renderer==0.5.7
+py-atc-ble-oepl==0.3.0
