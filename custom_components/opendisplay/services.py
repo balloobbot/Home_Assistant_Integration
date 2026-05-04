@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import logging
+from datetime import datetime
 from functools import wraps
 from typing import Final, Any, Callable
 
@@ -11,7 +13,9 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .coordinator import Hub
 from .ble import BLEConnectionError, BLETimeoutError, BLEProtocolError, BLEDeviceMetadata
 from .const import DOMAIN, SIGNAL_TAG_IMAGE_UPDATE
-from .imagegen import ImageGen
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from odl_renderer import generate_image
+from .runtime_data import OpenDisplayBLERuntimeData
 from .tag_types import get_tag_types_manager
 from .upload import create_upload_queues, DITHER_DEFAULT, upload_to_ble_direct, upload_to_ble_block, upload_to_hub
 from .util import is_ble_entry, get_hub_from_hass, rgb_to_rgb332, int_to_hex_string, \
@@ -19,6 +23,148 @@ from .util import is_ble_entry, get_hub_from_hass, rgb_to_rgb332, int_to_hex_str
 
 _LOGGER: Final = logging.getLogger(__name__)
 
+
+class HADataProvider:
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get_history(
+        self, entity_ids: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[dict]]:
+        from functools import partial
+        from homeassistant.components.recorder import get_instance
+        from homeassistant.components.recorder.history import get_significant_states
+
+        raw = await get_instance(self._hass).async_add_executor_job(
+            partial(
+                get_significant_states,
+                self._hass, start, end, entity_ids,
+                significant_changes_only=False,
+                minimal_response=True,
+                no_attributes=False,
+            )
+        )
+        # minimal_response=True: first item per entity is a LazyState object,
+        # subsequent items are already {"state", "last_changed"} dicts.
+        result = {}
+        for entity_id, states in raw.items():
+            if not states:
+                result[entity_id] = []
+                continue
+            first = states[0]
+            result[entity_id] = [
+                {"state": first.state, "last_changed": str(first.last_changed)},
+                *states[1:],
+            ]
+        return result
+
+
+def _detect_accent_color(color_table: dict) -> str:
+    has_red = "red" in color_table
+    has_yellow = "yellow" in color_table
+    if has_yellow and not has_red:
+        return "yellow"
+    elif has_red:
+        return "red"
+    return "black"
+
+
+async def _get_ap_tag_dimensions(hass: HomeAssistant, entity_id: str) -> tuple[int, int, str]:
+    try:
+        tag_mac = entity_id.split(".")[1].upper()
+    except IndexError:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_entity_id_format",
+            translation_placeholders={"entity_id": entity_id},
+        )
+
+    hub = get_hub_from_hass(hass)
+    if not hub.online:
+        raise HomeAssistantError(translation_domain=DOMAIN, translation_key="ap_offline_core")
+
+    if tag_mac not in hub.tags:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="tag_not_registered",
+            translation_placeholders={"tag_mac": tag_mac},
+        )
+    if tag_mac in hub.get_blacklisted_tags():
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="tag_blacklisted",
+            translation_placeholders={"tag_mac": tag_mac},
+        )
+
+    tag_data = hub.get_tag_data(tag_mac)
+    if not tag_data:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="tag_inconsistent",
+            translation_placeholders={"tag_mac": tag_mac},
+        )
+
+    hw_type = tag_data.get("hw_type")
+    if hw_type is None:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="tag_no_hw_type",
+            translation_placeholders={"tag_mac": tag_mac},
+        )
+
+    tag_manager = await get_tag_types_manager(hass)
+    tag_type = await tag_manager.get_tag_info(hw_type)
+    if not tag_type:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="tag_unknown_hw_type",
+            translation_placeholders={"hw_type": hw_type},
+        )
+
+    try:
+        accent_color = _detect_accent_color(getattr(tag_type, "color_table", {}))
+    except Exception as e:
+        _LOGGER.warning("Error getting accent color, defaulting to red: %s", e)
+        accent_color = "red"
+
+    return tag_type.width, tag_type.height, accent_color
+
+
+async def _get_ble_tag_dimensions(hass: HomeAssistant, entity_id: str) -> tuple[int, int, str]:
+    try:
+        tag_mac = entity_id.split(".")[1].upper()
+    except IndexError:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_entity_id_format",
+            translation_placeholders={"entity_id": entity_id},
+        )
+
+    device_metadata = None
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        runtime_data = getattr(entry, "runtime_data", None)
+        if isinstance(runtime_data, OpenDisplayBLERuntimeData):
+            if runtime_data.mac_address.upper() == tag_mac:
+                device_metadata = runtime_data.device_metadata
+                break
+
+    if not device_metadata:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="ble_no_metadata",
+            translation_placeholders={"entity_id": entity_id},
+        )
+
+    metadata = BLEDeviceMetadata(device_metadata)
+    color_scheme = metadata.color_scheme
+    accent_color = color_scheme.accent_color
+    return metadata.width, metadata.height, accent_color
+
+
+async def _get_tag_dimensions(hass: HomeAssistant, entity_id: str, is_ble: bool) -> tuple[int, int, str]:
+    if is_ble:
+        return await _get_ble_tag_dimensions(hass, entity_id)
+    return await _get_ap_tag_dimensions(hass, entity_id)
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
@@ -230,8 +376,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         Raises:
             HomeAssistantError: If AP is offline or image generation fails
         """
-        device_errors = []
-
         try:
             is_ble = is_ble_device(hass, entity_id)
 
@@ -246,33 +390,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     )
 
             # Generate image
-            generator = ImageGen(hass)
-            width, height, accent_color = await generator.get_tag_dimensions(
-                entity_id, is_ble=is_ble
-            )
-            image_data = await generator.generate_custom_image(
-                entity_id=entity_id,
-                service_data=service.data,
-                error_collector=device_errors,
+            width, height, accent_color = await _get_tag_dimensions(hass, entity_id, is_ble)
+            rotate = service.data.get("rotate", 0)
+            img = await generate_image(
                 width=width,
                 height=height,
+                elements=service.data.get("payload", []),
+                background=service.data.get("background", "white"),
                 accent_color=accent_color,
+                session=async_get_clientsession(hass),
+                data_provider=HADataProvider(hass),
             )
-
-            if device_errors:
-                errors_str = "\n".join(device_errors)
-                raise ServiceValidationError(
-                    translation_domain=DOMAIN,
-                    translation_key="invalid_payload",
-                    translation_placeholders={"errors": errors_str},
-                )
-
-            if device_errors:
-                _LOGGER.warning(
-                    "Completed with warnings for device %s:\n%s",
-                    entity_id,
-                    "\n".join(device_errors)
-                )
+            if rotate:
+                img = img.rotate(rotate, expand=True)
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality="maximum")
+            image_data = buf.getvalue()
 
             # Handle dry-run mode
             if service.data.get("dry-run", False):
