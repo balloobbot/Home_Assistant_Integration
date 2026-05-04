@@ -26,7 +26,7 @@ from .ble import (
     BLEConnectionError,
     BLEProtocolError,
 )
-from .tag_types import get_tag_types_manager, get_hw_string
+from .tag_types import get_hw_string
 from .util import is_ble_entry
 import logging
 
@@ -253,6 +253,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if protocol_type == "atc":
                     from homeassistant.components.bluetooth import async_ble_device_from_address
                     from py_atc_ble_oepl import ATCDevice
+                    from py_atc_ble_oepl.models.device_types import get_device_type_name
 
                     ble_device = async_ble_device_from_address(self.hass, mac, connectable=True)
                     async with ATCDevice(mac, ble_device, auto_interrogate=False) as device:
@@ -260,33 +261,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                     _LOGGER.debug("ATC capabilities: %s", caps)
 
-                    # Refine color_scheme using TagTypes db if available
-                    color_scheme = caps.color_scheme
-                    tag_types_manager = None
-                    try:
-                        tag_types_manager = await get_tag_types_manager(self.hass)
-                    except Exception as tag_err:
-                        _LOGGER.warning("Could not load tag types: %s", tag_err)
-
-                    if tag_types_manager and tag_types_manager.is_in_hw_map(hw_type):
-                        tag_type = await tag_types_manager.get_tag_info(hw_type)
-                        color_table = tag_type.color_table
-                        if "yellow" in color_table and "red" in color_table:
-                            color_scheme = 3  # BWRY
-                        elif "yellow" in color_table:
-                            color_scheme = 2  # BWY
-                        elif "red" in color_table:
-                            color_scheme = 1  # BWR
-                        else:
-                            color_scheme = 0  # BW
-
-                    model_name = get_hw_string(hw_type) if hw_type else "Unknown"
+                    # color_scheme is already refined via SCREEN_TYPE_COLOR_SCHEME in interrogate()
+                    # model name comes from the library's device type table
+                    model_name = (
+                        get_device_type_name(device.device_config.screen_type)
+                        if device.device_config
+                        else f"ATC 0x{hw_type:04X}"
+                    )
                     device_metadata = {
                         "hw_type": hw_type,
                         "fw_version": self._discovered_device["fw_version"],
                         "width": caps.width,
                         "height": caps.height,
-                        "color_scheme": color_scheme,
+                        "color_scheme": caps.color_scheme,
                         "model_name": model_name,
                     }
 

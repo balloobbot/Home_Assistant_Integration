@@ -531,27 +531,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         """Reboot the Access Point."""
         await hub.reboot_ap()
 
-    async def refresh_tag_types_service(service: ServiceCall) -> None:
-        """Force refresh tag types from GitHub."""
-        manager = await get_tag_types_manager(hass)
-        manager._last_update = None  # Force refresh by invalidating cache
-
-        # Let exceptions propagate - ensure_types_loaded will raise HomeAssistantError if it fails
-        await manager.ensure_types_loaded()
-
-        tag_types_len = len(manager.get_all_types())
-        message = f"Successfully refreshed {tag_types_len} tag type definitions from GitHub"
-
-        await hass.services.async_call(
-            "persistent_notification",
-            "create",
-            {
-                "title": "Tag Types Refresh",
-                "message": message,
-                "notification_id": "opendisplay_tag_types_refresh",
-            },
-        )
-
     # Register all services
     hass.services.async_register(DOMAIN, "drawcustom", drawcustom_service)
     hass.services.async_register(DOMAIN, "setled", setled_service)
@@ -560,4 +539,3 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "reboot_tag", reboot_tag_service)
     hass.services.async_register(DOMAIN, "scan_channels", scan_channels_service)
     hass.services.async_register(DOMAIN, "reboot_ap", reboot_ap_service)
-    hass.services.async_register(DOMAIN, "refresh_tag_types", refresh_tag_types_service)
