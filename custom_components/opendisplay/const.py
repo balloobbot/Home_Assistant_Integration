@@ -4,6 +4,7 @@ SIGNAL_TAG_IMAGE_UPDATE = f"{DOMAIN}_tag_image_update"
 SIGNAL_AP_UPDATE = f"{DOMAIN}_ap_update"
 OPENDISPLAY_CONFIG_URL = "https://opendisplay.org/firmware/config/"
 ATC_CONFIG_URL = "https://atc1441.github.io/ATC_BLE_OEPL_Image_Upload.html"
+CONF_ENCRYPTION_KEY = "encryption_key"
 
 # Fallback tag type definitions
 # These definitions are automatically synced from OpenEPaperLink repository

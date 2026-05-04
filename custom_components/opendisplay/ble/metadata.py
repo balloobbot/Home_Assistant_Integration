@@ -130,7 +130,7 @@ class BLEDeviceMetadata:
             power = self._metadata["open_display_config"].get("power")
             if power:
                 return power.get("power_mode", 1)
-        return 1  # ATC devices always have batteries
+        return self._metadata.get("power_mode", 1)
 
     @property
     def is_open_display(self) -> bool:

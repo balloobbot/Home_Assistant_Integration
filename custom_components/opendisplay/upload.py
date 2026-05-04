@@ -17,10 +17,7 @@ from PIL import Image
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError, HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from .runtime_data import OpenDisplayBLERuntimeData
 from .const import DOMAIN, SIGNAL_TAG_IMAGE_UPDATE
-from .ble import BLEConnection, BLEImageUploader, BLEDeviceMetadata, get_protocol_by_name, BLEConnectionError, \
-    BLETimeoutError, BLEProtocolError
 
 _LOGGER: Final = logging.getLogger(__name__)
 
@@ -352,194 +349,66 @@ async def upload_to_atc_ble(hass: HomeAssistant, entity_id: str, img: bytes, dit
         ) from err
 
 
-async def upload_to_ble_block(hass: HomeAssistant, entity_id: str, img: bytes, dither: int = 2) -> None:
-    """Upload image to BLE tag using block-based protocol.
-
-    Sends an image to a BLE tag using direct Bluetooth communication.
-    This bypasses the AP and provides faster upload times.
-
-    Uses protocol-specific service UUID based on device firmware type.
-    This method is used for ATC devices and as fallback for OpenDisplay devices.
-
-    Args:
-        hass: Home Assistant instance
-        entity_id: Entity ID of the target tag
-        img: JPEG image data as bytes
-        dither: Dithering mode (0=none, 1=Burkes, 2=ordered)
-
-    Raises:
-        HomeAssistantError: If BLE upload fails
-    """
-
-    mac = entity_id.split(".")[1].upper()
-    _LOGGER.debug("Preparing BLE block-based upload for %s (MAC: %s)", entity_id, mac)
-
-    try:
-        # Get device metadata from Home Assistant data
-        device_metadata = None
-        protocol_type = "atc"  # Default to ATC for backward compatibility
-
-        # Find the config entry for this BLE device
-        for entry in hass.config_entries.async_entries(DOMAIN):
-            runtime_data = getattr(entry, 'runtime_data', None)
-            if runtime_data is not None and isinstance(runtime_data, OpenDisplayBLERuntimeData):
-                if runtime_data.mac_address.upper() == mac:
-                    device_metadata = runtime_data.device_metadata
-                    protocol_type = runtime_data.protocol_type
-                    break
-
-
-        if not device_metadata:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="ble_no_metadata",
-                translation_placeholders={"entity_id": entity_id}
-            )
-
-        # Get protocol handler for service UUID
-        protocol = get_protocol_by_name(protocol_type)
-        _LOGGER.debug("Using protocol %s for device %s", protocol_type, entity_id)
-
-        # Wrap metadata and create DeviceMetadata object
-        metadata = BLEDeviceMetadata(device_metadata)
-
-        # Upload via BLE using protocol-specific service UUID
-        async with BLEConnection(hass, mac, protocol.service_uuid, protocol) as conn:
-            uploader = BLEImageUploader(conn, mac)
-            success, processed_image = await uploader.upload_image_block_based(img, metadata, protocol_type, dither)
-
-            if not success:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="ble_upload_failed",
-                    translation_placeholders={"entity_id": entity_id}
-                )
-
-            if processed_image is not None:
-                # Undo rotation for display (ATC rotation is for device memory, not viewing)
-                display_image = processed_image
-                if protocol_type == "atc" and metadata.rotatebuffer == 1:
-                    display_image = processed_image.transpose(Image.Transpose.ROTATE_270)
-
-                buffer = BytesIO()
-                display_image.save(buffer, format="JPEG", quality=95)
-                jpeg_bytes = buffer.getvalue()
-                async_dispatcher_send(
-                    hass,
-                    f"{SIGNAL_TAG_IMAGE_UPDATE}_{mac}",
-                    jpeg_bytes
-                )
-
-    except ServiceValidationError:
-        raise  # Config/validation errors - propagate unchanged
-    except (BLEConnectionError, BLETimeoutError, BLEProtocolError) as err:
-        # BLE-specific errors already inherit from HomeAssistantError
-        raise  # Propagate with specific type
-    except Exception as err:
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="unexpected_ble_upload",
-            translation_placeholders={"entity_id": entity_id, "error": str(err)}
-        ) from err
-
-
-async def upload_to_ble_direct(
-        hass: HomeAssistant,
-        entity_id: str,
-        img: bytes,
-        compressed: bool = False,
-        dither: int = 2,
-        refresh_type: int = 0,
+async def upload_to_opendisplay(
+    hass: HomeAssistant,
+    entity_id: str,
+    img: bytes,
+    dither_mode: DitherMode = DitherMode.ORDERED,
+    refresh_type: int = 0,
 ) -> None:
-    """Upload image to BLE tag using direct write protocol (OpenDisplay only).
+    """Upload image to an OpenDisplay BLE tag using the py-opendisplay library."""
+    from opendisplay import OpenDisplayDevice, OpenDisplayError
+    from opendisplay.models.enums import RefreshMode
 
-    Sends an image to an OpenDisplay BLE tag using direct write mode.
-    This is faster than block-based upload and supports all color schemes.
-
-    Args:
-        hass: Home Assistant instance
-        entity_id: Entity ID of the target tag
-        img: JPEG image data as bytes
-        compressed: Whether to compress the image data
-        dither: Dithering mode (0=none, 1=Burkes, 2=ordered)
-        refresh_type: Display refresh mode (0=full, 1=fast, 2=partial, 3=partial2)
-    Raises:
-        HomeAssistantError: If BLE direct write upload fails
-    """
     mac = entity_id.split(".")[1].upper()
-    _LOGGER.debug(
-        "Preparing BLE direct write upload for %s (MAC: %s, compressed=%s, refresh_type=%d)",
-        entity_id,
-        mac,
-        compressed,
-        refresh_type
-    )
+    _LOGGER.debug("Starting OpenDisplay BLE upload for %s (MAC: %s)", entity_id, mac)
+
+    encryption_key: bytes | None = None
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if (entry.data.get("device_type") == "ble"
+                and entry.data.get("mac_address", "").upper() == mac):
+            raw = entry.data.get("encryption_key")
+            if raw and len(raw) == 32:
+                try:
+                    encryption_key = bytes.fromhex(raw)
+                except ValueError:
+                    pass
+            break
 
     try:
-        # Get device metadata from Home Assistant data
-        device_metadata = None
-        protocol_type = "open_display"  # Direct write is OpenDisplay only
+        ble_device = async_ble_device_from_address(hass, mac, connectable=True)
+        pil_img = Image.open(BytesIO(img))
+        refresh_mode = RefreshMode.FAST if refresh_type == 1 else RefreshMode.FULL
 
-        # Find the config entry for this BLE device
-        for entry in hass.config_entries.async_entries(DOMAIN):
-            runtime_data = getattr(entry, 'runtime_data', None)
-            if runtime_data is not None and isinstance(runtime_data, OpenDisplayBLERuntimeData):
-                if runtime_data.mac_address.upper() == mac:
-                    device_metadata = runtime_data.device_metadata
-                    protocol_type = runtime_data.protocol_type
-                    break
-
-        if not device_metadata:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="ble_no_metadata",
-                translation_placeholders={"entity_id": entity_id}
+        async with OpenDisplayDevice(
+            mac_address=mac, ble_device=ble_device, encryption_key=encryption_key
+        ) as device:
+            result = await device.upload_image(
+                pil_img,
+                dither_mode=dither_mode,
+                refresh_mode=refresh_mode,
             )
 
-        # Verify this is an OpenDisplay device
-        metadata = BLEDeviceMetadata(device_metadata)
-        if not metadata.is_open_display:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="ble_direct_write_not_supported",
-                translation_placeholders={"entity_id": entity_id}
-            )
+        buf = BytesIO()
+        result.convert("RGB").save(buf, format="JPEG", quality=95)
+        async_dispatcher_send(hass, f"{SIGNAL_TAG_IMAGE_UPDATE}_{mac}", buf.getvalue())
 
-        # Get protocol handler for service UUID
-        protocol = get_protocol_by_name(protocol_type)
-        _LOGGER.debug("Using protocol %s for direct write on device %s", protocol_type, entity_id)
-
-        # Upload via BLE using direct write protocol
-        async with BLEConnection(hass, mac, protocol.service_uuid, protocol) as conn:
-            uploader = BLEImageUploader(conn, mac)
-            success, processed_image = await uploader.upload_direct_write(img, metadata, compressed, dither, refresh_type)
-
-            if not success:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="ble_direct_write_failed",
-                    translation_placeholders={"entity_id": entity_id}
-                )
-
-            if processed_image is not None:
-                buffer = BytesIO()
-                processed_image.save(buffer, format="JPEG", quality=95)
-                jpeg_bytes = buffer.getvalue()
-                async_dispatcher_send(
-                    hass,
-                    f"{SIGNAL_TAG_IMAGE_UPDATE}_{mac}",
-                    jpeg_bytes
-                )
-
-    except ServiceValidationError:
-        raise  # Config/validation errors - propagate unchanged
-    except (BLEConnectionError, BLETimeoutError, BLEProtocolError) as err:
-        raise  # BLE operational errors - propagate unchanged
-    except Exception as err:
+    except OpenDisplayError as err:
         raise HomeAssistantError(
             translation_domain=DOMAIN,
-            translation_key="unexpected_ble_direct_write",
-            translation_placeholders={"entity_id": entity_id, "error": str(err)}
+            translation_key="ble_upload_failed",
+            translation_placeholders={"entity_id": entity_id},
+        ) from err
+    except HomeAssistantError:
+        raise
+    except Exception as err:
+        _LOGGER.error(
+            "Unexpected error during OpenDisplay BLE upload for %s: %s", entity_id, str(err), exc_info=True
+        )
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="unexpected_ble_upload_error",
+            translation_placeholders={"entity_id": entity_id, "error": str(err)},
         ) from err
 
 

@@ -350,63 +350,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
                 service_info: bluetooth.BluetoothServiceInfoBleak,
                 change: bluetooth.BluetoothChange,
         ) -> None:
-            """Handle BLE advertising data updates.
-
-            Uses protocol-specific parsing based on the device firmware type.
-            """
-            # Only process the specific device
+            """Handle BLE advertising data updates."""
             if service_info.address != mac_address:
                 return
 
-            # Parse manufacturer data using protocol-specific parser
-            manufacturer_data = service_info.manufacturer_data.get(protocol.manufacturer_id)
-            if not manufacturer_data:
-                _LOGGER.debug(
-                    "No manufacturer data for 0x%04X on %s (available: %s)",
-                    protocol.manufacturer_id,
-                    mac_address,
-                    service_info.manufacturer_data.keys()
-                )
-                return
+            if protocol_type == "open_display":
+                from opendisplay import parse_advertisement, MANUFACTURER_ID as OD_MANUFACTURER_ID
+                from opendisplay.battery import voltage_to_percent, CapacityEstimator
 
-            try:
-                advertising_data = protocol.parse_advertising_data(manufacturer_data)
-                if not advertising_data:
-                    _LOGGER.debug("parse_advertising_data returned None for %s", mac_address)
+                manufacturer_data = service_info.manufacturer_data.get(OD_MANUFACTURER_ID)
+                if not manufacturer_data:
                     return
-            except Exception as err:
-                _LOGGER.debug("Failed to parse advertising data for %s: %s", mac_address, err, exc_info=True)
-                return
+                try:
+                    adv = parse_advertisement(manufacturer_data)
+                except Exception as err:
+                    _LOGGER.debug("Failed to parse OpenDisplay advertisement for %s: %s", mac_address, err)
+                    return
 
-            # Dynamically update device attributes (skip OpenDisplay fw to avoid incorrect value)
-            if advertising_data.fw_version and protocol_type != "open_display":
-                device_registry = dr.async_get(hass)
-                device_entry = device_registry.async_get_device(
-                    identifiers={(DOMAIN, f"ble_{mac_address}")}
-                )
-                new_fw_string = str(advertising_data.fw_version)
-                if device_entry and device_entry.sw_version != new_fw_string:
+                sensor_data = {
+                    "battery_percentage": voltage_to_percent(adv.battery_mv, CapacityEstimator.LI_ION),
+                    "battery_voltage": adv.battery_mv if adv.battery_mv > 0 else None,
+                    "rssi": service_info.rssi,
+                    "last_seen": datetime.now(timezone.utc),
+                    "temperature": adv.temperature_c,
+                }
+            else:
+                manufacturer_data = service_info.manufacturer_data.get(protocol.manufacturer_id)
+                if not manufacturer_data:
                     _LOGGER.debug(
-                        "Device %s firmware updated from %s to %s",
+                        "No manufacturer data for 0x%04X on %s",
+                        protocol.manufacturer_id,
                         mac_address,
-                        device_entry.sw_version,
-                        new_fw_string,
                     )
-                    device_registry.async_update_device(
-                        device_entry.id,
-                        sw_version=new_fw_string
+                    return
+                try:
+                    advertising_data = protocol.parse_advertising_data(manufacturer_data)
+                    if not advertising_data:
+                        return
+                except Exception as err:
+                    _LOGGER.debug("Failed to parse advertising data for %s: %s", mac_address, err, exc_info=True)
+                    return
+
+                if advertising_data.fw_version:
+                    device_registry = dr.async_get(hass)
+                    device_entry = device_registry.async_get_device(
+                        identifiers={(DOMAIN, f"ble_{mac_address}")}
                     )
+                    new_fw_string = str(advertising_data.fw_version)
+                    if device_entry and device_entry.sw_version != new_fw_string:
+                        device_registry.async_update_device(device_entry.id, sw_version=new_fw_string)
 
-            # Build sensor data
-            sensor_data = {
-                "battery_percentage": advertising_data.battery_pct,
-                "battery_voltage": advertising_data.battery_mv if advertising_data.battery_mv > 0 else None,
-                "rssi": service_info.rssi,
-                "last_seen": datetime.now(timezone.utc),
-                "temperature": advertising_data.temperature,
-            }
+                sensor_data = {
+                    "battery_percentage": advertising_data.battery_pct,
+                    "battery_voltage": advertising_data.battery_mv if advertising_data.battery_mv > 0 else None,
+                    "rssi": service_info.rssi,
+                    "last_seen": datetime.now(timezone.utc),
+                    "temperature": advertising_data.temperature,
+                }
 
-            # Update all registered sensors
             for sensor in ble_data.sensors.values():
                 sensor.update_from_advertising_data(sensor_data)
 

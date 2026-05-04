@@ -5,6 +5,16 @@
         "title": "Set up BLE Tag",
         "description": "Set up **{name}**?\n\n**Details:**\n- Address: {address}\n- Signal: {rssi} dBm\n- Battery: {battery}\n- Firmware: {fw_version}\n- Config Version: {config_version}"
       },
+      "encryption_key": {
+        "title": "Encryption Key Required",
+        "description": "**{name}** requires an encryption key. Enter the 32-character hex key.",
+        "data": {
+          "encryption_key": "Encryption Key"
+        },
+        "data_description": {
+          "encryption_key": "32-character hexadecimal encryption key (e.g. 00112233445566778899aabbccddeeff)"
+        }
+      },
       "dhcp_confirm": {
         "title": "Set up {hostname} ({ip})",
         "description": "An OEPL access point was discovered on the network.\n\n**Device Details:**\n- Hostname: {hostname}\n- IP Address: {ip}\n- MAC Address: {mac}\n\nShould this access point be added to Home Assistant?"
@@ -30,7 +40,9 @@
     },
     "error": {
       "interrogation_failed": "Failed to connect to device and retrieve display information. Error: {error}. Retry or check device connectivity.",
-      "invalid_device_config": "Device returned invalid configuration data. Please reconfigure the device or update its firmware."
+      "invalid_device_config": "Device returned invalid configuration data. Please reconfigure the device or update its firmware.",
+      "invalid_auth": "Incorrect encryption key. Please try again.",
+      "invalid_key_format": "Invalid key format. Must be exactly 32 hexadecimal characters."
     },
     "abort": {
       "single_instance_allowed": "Only one OEPL hub can be configured. Multiple BLE devices are supported, but only one AP hub is allowed.",

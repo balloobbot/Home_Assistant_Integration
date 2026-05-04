@@ -11,14 +11,14 @@ from homeassistant.exceptions import ServiceValidationError, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .coordinator import Hub
-from .ble import BLEConnectionError, BLETimeoutError, BLEProtocolError, BLEDeviceMetadata
+from .ble import BLEDeviceMetadata
 from .const import DOMAIN, SIGNAL_TAG_IMAGE_UPDATE
 from epaper_dithering import DitherMode
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from odl_renderer import generate_image
 from .runtime_data import OpenDisplayBLERuntimeData
 from .tag_types import get_tag_types_manager
-from .upload import create_upload_queues, upload_to_ble_direct, upload_to_ble_block, upload_to_hub, upload_to_atc_ble
+from .upload import create_upload_queues, upload_to_hub, upload_to_atc_ble, upload_to_opendisplay
 
 _LEGACY_DITHER_MAP = {"0": DitherMode.NONE, "1": DitherMode.BURKES, "2": DitherMode.ORDERED}
 
@@ -441,33 +441,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         translation_placeholders={"entity_id": entity_id},
                     )
 
-                # Determine upload method
                 mac = get_mac_from_entity_id(entity_id)
 
-                # Find device metadata
-                device_metadata = {}
+                protocol_type = "atc"
                 for entry in hass.config_entries.async_entries(DOMAIN):
                     runtime_data = getattr(entry, 'runtime_data', None)
                     if runtime_data is not None and is_ble_entry(runtime_data):
                         if runtime_data.mac_address.upper() == mac:
-                            device_metadata = runtime_data.device_metadata
+                            protocol_type = runtime_data.protocol_type
                             break
 
-                metadata = BLEDeviceMetadata(device_metadata)
-                upload_method = metadata.get_best_upload_method(len(image_data))
-
-                if upload_method == "block":
-                    await ble_upload_queue.add_to_queue(upload_to_atc_ble, hass, entity_id, image_data, dither_mode)
-                else:
+                if protocol_type == "open_display":
                     await ble_upload_queue.add_to_queue(
-                        upload_to_ble_direct,
-                        hass,
-                        entity_id,
-                        image_data,
-                        upload_method == "direct_write_compressed",
-                        dither_mode.value,
-                        refresh_type
+                        upload_to_opendisplay, hass, entity_id, image_data, dither_mode, refresh_type
                     )
+                else:
+                    await ble_upload_queue.add_to_queue(upload_to_atc_ble, hass, entity_id, image_data, dither_mode)
             else:
                 # Map refresh_type to AP's lut parameter
                 # 0→1 (full), 1→3 (fast), 2→2 (fast no-reds), 3→0 (no-repeats)
@@ -483,7 +472,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         except ServiceValidationError:
             raise  # User input errors - propagate unchanged
-        except (HomeAssistantError, BLEConnectionError, BLETimeoutError, BLEProtocolError):
+        except HomeAssistantError:
             raise  # Operational errors - propagate unchanged
         except Exception as err:
             # Unexpected errors - wrap as operational error
