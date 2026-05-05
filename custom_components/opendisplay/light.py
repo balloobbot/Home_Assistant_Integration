@@ -33,22 +33,11 @@ async def async_setup_entry(
     if not isinstance(entry_data, OpenDisplayBLERuntimeData):
         return
 
-    mac_address = entry_data.mac_address
-    name = entry_data.name
-    protocol_type = entry_data.protocol_type
-
     # LED only supported on ATC devices
-    if protocol_type == "open_display":
+    if entry_data.protocol_type == "open_display":
         return
 
-    light = OpenDisplayBLELight(
-        hass=hass,
-        mac_address=mac_address,
-        name=name,
-        entry=entry,
-    )
-
-    async_add_entities([light])
+    async_add_entities([OpenDisplayBLELight(hass=hass, entry=entry)])
 
 
 class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
@@ -56,15 +45,8 @@ class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
 
     _attr_entity_registry_enabled_default = True
 
-    def __init__(
-            self,
-            hass: HomeAssistant,
-            mac_address: str,
-            name: str,
-            entry: OpenDisplayConfigEntry,
-    ) -> None:
-        """Initialize the BLE light entity."""
-        super().__init__(mac_address, name, entry)
+    def __init__(self, hass: HomeAssistant, entry: OpenDisplayConfigEntry) -> None:
+        super().__init__(entry)
         self._hass = hass
         self._is_on = False
         self._auto_off_task = None
@@ -72,8 +54,7 @@ class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
 
     @property
     def unique_id(self) -> str:
-        """Return unique ID for this entity."""
-        return f"opendisplay_ble_{self._mac_address}_light"
+        return f"{self._entry.unique_id}_light"
 
     @property
     def is_on(self) -> bool:
@@ -102,8 +83,8 @@ class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
         from py_atc_ble_oepl.protocol.constants import CMD_LED_ON
 
         try:
-            ble_device = async_ble_device_from_address(self.hass, self._mac_address, connectable=True)
-            async with ATCDevice(self._mac_address, ble_device, auto_interrogate=False) as dev:
+            ble_device = async_ble_device_from_address(self.hass, self._entry.unique_id, connectable=True)
+            async with ATCDevice(self._entry.unique_id, ble_device, auto_interrogate=False) as dev:
                 await dev._connection.write_command(CMD_LED_ON)
             self._is_on = True
             self.async_write_ha_state()
@@ -127,8 +108,8 @@ class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
         try:
             if self._auto_off_task and not self._auto_off_task.done():
                 self._auto_off_task.cancel()
-            ble_device = async_ble_device_from_address(self.hass, self._mac_address, connectable=True)
-            async with ATCDevice(self._mac_address, ble_device, auto_interrogate=False) as dev:
+            ble_device = async_ble_device_from_address(self.hass, self._entry.unique_id, connectable=True)
+            async with ATCDevice(self._entry.unique_id, ble_device, auto_interrogate=False) as dev:
                 await dev._connection.write_command(CMD_LED_OFF)
             self._is_on = False
             self.async_write_ha_state()
@@ -151,8 +132,8 @@ class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
             if self._is_on:
                 self._is_on = False
                 self.async_write_ha_state()
-                _LOGGER.debug("LED auto-turned off for %s after connection closed", self._mac_address)
+                _LOGGER.debug("LED auto-turned off for %s after connection closed", self._entry.unique_id)
         except asyncio.CancelledError:
-            _LOGGER.debug("Auto-off timer cancelled for %s", self._mac_address)
+            _LOGGER.debug("Auto-off timer cancelled for %s", self._entry.unique_id)
         except Exception as e:
-            _LOGGER.error("Error in auto-off timer for %s: %s", self._mac_address, e)
+            _LOGGER.error("Error in auto-off timer for %s: %s", self._entry.unique_id, e)

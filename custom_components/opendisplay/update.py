@@ -51,11 +51,11 @@ async def async_setup_entry(
         if enabled and entry.entry_id not in added:
             if entry_data.protocol_type != "open_display":
                 _LOGGER.debug(
-                    "Skipping update entity for %s (not OpenDisplay)", entry_data.mac_address
+                    "Skipping update entity for %s (not OpenDisplay)", entry.unique_id
                 )
                 return  # OpenDisplay-only
             _LOGGER.debug(
-                "Enabling OpenDisplay firmware update entity for %s", entry_data.mac_address
+                "Enabling OpenDisplay firmware update entity for %s", entry.unique_id
             )
             entity = OpenDisplayBleUpdateEntity(hass, entry, entry_data)
             added[entry.entry_id] = entity
@@ -65,7 +65,7 @@ async def async_setup_entry(
         if not enabled and (entity := added.pop(entry.entry_id, None)):
             _LOGGER.debug(
                 "Labs disabled; removing OpenDisplay firmware update entity for %s",
-                entry_data.mac_address,
+                entry.unique_id,
             )
             hass.async_create_task(_remove_entity(entity))
 
@@ -103,11 +103,9 @@ class OpenDisplayBleUpdateEntity(OpenDisplayBLEEntity, UpdateEntity):
         self._release_notes: str | None = None
         self._last_checked: datetime | None = None
         self._last_fetch_error: str | None = None
-        self._mac = runtime_data.mac_address
-        self._name = runtime_data.name
         self._session = async_get_clientsession(hass)
-        super().__init__(self._mac, self._name, entry)
-        self._attr_unique_id = f"opendisplay_ble_{self._mac}_firmware_update"
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.unique_id}_firmware_update"
         self._attr_installed_version = self._compute_installed_version()
 
     @property
@@ -118,29 +116,18 @@ class OpenDisplayBleUpdateEntity(OpenDisplayBLEEntity, UpdateEntity):
     def _compute_installed_version(self) -> str | None:
         fw = self._entry.data.get("device_metadata", {}).get("fw_version")
         if fw not in ("", 0, None):
-            _LOGGER.debug("Firmware from metadata for %s: %s", self._mac, fw)
             return str(fw)
 
         from homeassistant.helpers import device_registry as dr
+        from homeassistant.components.bluetooth import CONNECTION_BLUETOOTH
 
         device_registry = dr.async_get(self.hass)
         device = device_registry.async_get_device(
-            identifiers={(DOMAIN, f"ble_{self._mac}")},
+            connections={(CONNECTION_BLUETOOTH, self._entry.unique_id)},
         )
         if device and device.sw_version and device.sw_version.lower() != "unknown":
-            _LOGGER.debug(
-                "Firmware from device registry for %s: %s",
-                self._mac,
-                device.sw_version,
-            )
             return device.sw_version
 
-        _LOGGER.debug(
-            "No firmware version available for %s; metadata=%s registry=%s",
-            self._mac,
-            metadata_dict,
-            device.sw_version if device else None,
-        )
         return None
 
     @property

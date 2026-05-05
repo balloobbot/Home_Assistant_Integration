@@ -92,12 +92,10 @@ class OpenDisplayBLESensor(OpenDisplayBLEEntity, SensorEntity):
     def __init__(
             self,
             hass: HomeAssistant,
-            mac_address: str,
-            name: str,
             entry: OpenDisplayConfigEntry,
             description: OpenDisplaySensorEntityDescription,
     ) -> None:
-        super().__init__(mac_address, name, entry)
+        super().__init__(entry)
         self._hass = hass
         self._description = description
         self._sensor_data = {}
@@ -106,7 +104,7 @@ class OpenDisplayBLESensor(OpenDisplayBLEEntity, SensorEntity):
 
     @property
     def unique_id(self) -> str:
-        return f"opendisplay_ble_{self._mac_address}_{self._description.key}"
+        return f"{self._entry.unique_id}_{self._description.key}"
 
     @property
     def native_value(self) -> StateType:
@@ -149,8 +147,6 @@ async def async_setup_entry(
         async_add_entities: AddEntitiesCallback,
 ) -> None:
     entry_data = entry.runtime_data
-    mac_address = entry_data.mac_address
-    name = entry_data.name
     protocol_type = entry_data.protocol_type
 
     from opendisplay import GlobalConfig
@@ -168,8 +164,6 @@ async def async_setup_entry(
 
         sensor = OpenDisplayBLESensor(
             hass=hass,
-            mac_address=mac_address,
-            name=name,
             entry=entry,
             description=description,
         )
