@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 
 if TYPE_CHECKING:
-    from .coordinator import Hub
     from opendisplay import GlobalConfig
     from py_atc_ble_oepl import DeviceCapabilities
 
@@ -21,4 +20,4 @@ class OpenDisplayBLERuntimeData:
     protocol_type: str
     sensors: dict[str, Any] = field(default_factory=dict)
 
-type OpenDisplayConfigEntry = ConfigEntry[Hub | OpenDisplayBLERuntimeData]
+type OpenDisplayConfigEntry = ConfigEntry[OpenDisplayBLERuntimeData]
