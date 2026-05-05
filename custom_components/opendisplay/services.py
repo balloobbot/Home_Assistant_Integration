@@ -79,7 +79,7 @@ async def _get_ble_tag_dimensions(hass: HomeAssistant, entity_id: str) -> tuple[
     runtime_data = None
     for entry in hass.config_entries.async_entries(DOMAIN):
         rd = getattr(entry, "runtime_data", None)
-        if isinstance(rd, OpenDisplayBLERuntimeData) and rd.mac_address.upper() == tag_mac:
+        if isinstance(rd, OpenDisplayBLERuntimeData) and entry.unique_id.upper() == tag_mac:
             runtime_data = rd
             break
 
@@ -116,23 +116,25 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def get_device_ids_from_label_id(label_id: str) -> list[str]:
         device_registry = dr.async_get(hass)
-        devices = dr.async_entries_for_label(device_registry, label_id)
+        opendisplay_entry_ids = {e.entry_id for e in hass.config_entries.async_entries(DOMAIN)}
         return [
             device.id
-            for device in devices
-            if any(i[0] == DOMAIN for i in device.identifiers)
+            for device in dr.async_entries_for_label(device_registry, label_id)
+            if device.config_entries & opendisplay_entry_ids
         ]
 
     async def get_device_ids_from_area_id(area_id: str) -> list[str]:
         device_registry = dr.async_get(hass)
-        devices = dr.async_entries_for_area(device_registry, area_id)
+        opendisplay_entry_ids = {e.entry_id for e in hass.config_entries.async_entries(DOMAIN)}
         return [
             device.id
-            for device in devices
-            if any(i[0] == DOMAIN for i in device.identifiers)
+            for device in dr.async_entries_for_area(device_registry, area_id)
+            if device.config_entries & opendisplay_entry_ids
         ]
 
     async def get_entity_id_from_device_id(device_id: str) -> str:
+        from homeassistant.components.bluetooth import CONNECTION_BLUETOOTH
+
         device_registry = dr.async_get(hass)
         device = device_registry.async_get(device_id)
         if not device:
@@ -141,23 +143,18 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 translation_key="device_not_found",
                 translation_placeholders={"device_id": device_id},
             )
-        if not device.identifiers:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="device_no_identifiers",
-                translation_placeholders={"device_id": device_id},
-            )
 
-        domain_mac = next(iter(device.identifiers))
-        if domain_mac[0] != DOMAIN:
+        mac_address = next(
+            (addr for conn_type, addr in device.connections if conn_type == CONNECTION_BLUETOOTH),
+            None,
+        )
+        if not mac_address:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="device_not_opendisplay",
                 translation_placeholders={"device_id": device_id},
             )
 
-        identifier = domain_mac[1]
-        mac_address = identifier[4:] if identifier.startswith("ble_") else identifier
         return f"{DOMAIN}.{mac_address.lower()}"
 
     def handle_targets(func: Callable) -> Callable:
