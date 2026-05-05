@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from homeassistant.components import bluetooth
 from homeassistant.helpers.entity import DeviceInfo, Entity
 
-from .const import DOMAIN, OPENDISPLAY_CONFIG_URL, ATC_CONFIG_URL
+from .const import OPENDISPLAY_CONFIG_URL, ATC_CONFIG_URL
 
 if TYPE_CHECKING:
     from .runtime_data import OpenDisplayConfigEntry
@@ -17,18 +17,12 @@ class OpenDisplayBLEEntity(Entity):
     _attr_has_entity_name = True
     _attr_entity_registry_enabled_default = False
 
-    def __init__(
-            self,
-            mac_address: str,
-            name: str,
-            entry: OpenDisplayConfigEntry,
-    ) -> None:
-        self._mac_address = mac_address
-        self._name = name
+    def __init__(self, entry: OpenDisplayConfigEntry) -> None:
         self._entry = entry
 
     @property
     def device_info(self) -> DeviceInfo:
+        from homeassistant.components.bluetooth import CONNECTION_BLUETOOTH
         from opendisplay import GlobalConfig
 
         runtime = self._entry.runtime_data
@@ -55,8 +49,8 @@ class OpenDisplayBLEEntity(Entity):
             sw_version = str(fw_version)
 
         return DeviceInfo(
-            identifiers={(DOMAIN, f"ble_{self._mac_address}")},
-            name=self._name,
+            connections={(CONNECTION_BLUETOOTH, self._entry.unique_id)},
+            name=self._entry.title,
             manufacturer="OpenDisplay",
             model=model_name,
             sw_version=sw_version,
@@ -66,4 +60,4 @@ class OpenDisplayBLEEntity(Entity):
 
     @property
     def available(self) -> bool:
-        return bluetooth.async_address_present(self.hass, self._mac_address)
+        return bluetooth.async_address_present(self.hass, self._entry.unique_id)
