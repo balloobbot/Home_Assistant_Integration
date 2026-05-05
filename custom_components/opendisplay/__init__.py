@@ -23,7 +23,6 @@ _LOGGER: Final = logging.getLogger(__name__)
 PLATFORMS = [
     Platform.SENSOR,
     Platform.LIGHT,
-    Platform.BUTTON,
     Platform.IMAGE,
     Platform.UPDATE,
 ]
