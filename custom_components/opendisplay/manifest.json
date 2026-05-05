@@ -26,9 +26,6 @@
     }
   },
   "requirements": [
-    "bleak>=1.0.1",
-    "bleak-retry-connector>=3.4.0",
-    "numpy>=1.26.4",
     "odl-renderer==0.5.7",
     "py-atc-ble-oepl==0.4.0",
     "py-opendisplay==6.0.0"
