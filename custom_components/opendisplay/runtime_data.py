@@ -14,8 +14,6 @@ if TYPE_CHECKING:
 class OpenDisplayBLERuntimeData:
     """Runtime data for BLE device entries"""
 
-    mac_address: str
-    name: str
     device_config: "GlobalConfig | DeviceCapabilities"
     protocol_type: str
     sensors: dict[str, Any] = field(default_factory=dict)
