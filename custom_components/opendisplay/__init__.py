@@ -22,20 +22,10 @@ _LOGGER: Final = logging.getLogger(__name__)
 
 PLATFORMS = [
     Platform.SENSOR,
+    Platform.LIGHT,
     Platform.BUTTON,
     Platform.IMAGE,
-    Platform.SELECT,
-    Platform.SWITCH,
-    Platform.TEXT,
-]
-
-# BLE devices use a subset of platforms
-BLE_PLATFORMS = [
-    Platform.SENSOR,  # Battery, RSSI, last seen
-    Platform.LIGHT,  # LED control
-    Platform.BUTTON,  # Clock mode controls
-    Platform.IMAGE, # Display content (captured from drawcustom)
-    Platform.UPDATE
+    Platform.UPDATE,
 ]
 
 
@@ -438,7 +428,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
             _LOGGER.info("Removed invalid BLE entities: %s", removed_invalid)
 
         # Set up BLE-specific platforms FIRST (before callback registration)
-        await hass.config_entries.async_forward_entry_setups(entry, BLE_PLATFORMS)
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
         # Register BLE advertising listener with protocol-specific manufacturer ID
         unregister_callback = bluetooth.async_register_callback(
@@ -539,7 +529,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry)
 
     if is_ble_device:
         # BLE device cleanup
-        unload_ok = await hass.config_entries.async_unload_platforms(entry, BLE_PLATFORMS)
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     else:
         # AP entry cleanup
         hub = entry_data
