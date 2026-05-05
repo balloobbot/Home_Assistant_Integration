@@ -7,11 +7,9 @@ from io import BytesIO
 from typing import Final
 
 import async_timeout
-import requests
 from epaper_dithering import DitherMode
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from py_atc_ble_oepl import ATCDevice, ATCError
-from requests_toolbelt import MultipartEncoder
 from PIL import Image
 
 from homeassistant.core import HomeAssistant
@@ -207,107 +205,6 @@ class UploadQueueHandler:
             _LOGGER.debug("Upload task for %s finished. %s", entity_id, self)
 
 
-async def upload_to_hub(hub, entity_id: str, img: bytes, dither: int, ttl: int,
-                       preload_type: int = 0, preload_lut: int = 0, lut: int = 1) -> None:
-    """Upload image to tag through AP.
-
-    Sends an image to the AP for display on a specific tag using
-    multipart/form-data POST request. Configures display parameters
-    such as dithering, TTL, and optional preloading.
-
-    Will retry upload on timeout, with increasing backoff times
-
-    Args:
-        hub: Hub instance with connection details
-        entity_id: Entity ID of the target tag
-        img: JPEG image data as bytes
-        dither: Dithering mode (0=none, 1=Floyd-Steinberg, 2=ordered)
-        ttl: Time-to-live in seconds
-        preload_type: Type for image preloading (0=disabled)
-        preload_lut: Look-up table for preloading
-        lut: Display refresh LUT mode (1=full, 3=fast, 2=fast no-reds, 0=no-repeats)
-    Raises:
-        HomeAssistantError: If upload fails or times out
-    """
-    url = f"http://{hub.host}/imgupload"
-    mac = entity_id.split(".")[1].upper()
-
-    _LOGGER.debug("Preparing upload for %s (MAC: %s)", entity_id, mac)
-    _LOGGER.debug("Upload parameters: dither=%d, ttl=%d, preload_type=%d, preload_lut=%d, lut=%d",
-                  dither, ttl, preload_type, preload_lut, lut)
-
-    # Convert TTL fom seconds to minutes for the AP
-    ttl_minutes = max(1, ttl // 60)
-
-    backoff_delay = INITIAL_BACKOFF # Try up to MAX_RETRIES times to upload the image, retrying on TimeoutError.
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-
-            # Create a new MultipartEncoder for each attempt
-            fields = {
-                'mac': mac,
-                'contentmode': "25",
-                'dither': str(dither),
-                'ttl': str(ttl_minutes),
-                'lut': str(lut),
-                'image': ('image.jpg', img, 'image/jpeg'),
-            }
-
-            if preload_type > 0:
-                fields.update({
-                    'preloadtype': str(preload_type),
-                    'preloadlut': str(preload_lut),
-                })
-
-            mp_encoder = MultipartEncoder(fields=fields)
-
-            async with async_timeout.timeout(30):  # 30 second timeout for upload
-                response = await hub.hass.async_add_executor_job(
-                    lambda: requests.post(
-                        url,
-                        headers={'Content-Type': mp_encoder.content_type},
-                        data=mp_encoder
-                    )
-                )
-
-            if response.status_code != 200:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="image_upload_status",
-                    translation_placeholders={"entity_id": entity_id, "status_code": response.status_code}
-                )
-            break
-
-        except asyncio.TimeoutError:
-            if attempt < MAX_RETRIES:
-                _LOGGER.warning(
-                    "Timeout uploading %s (attempt %d/%d), retrying in %ds…",
-                    entity_id, attempt, MAX_RETRIES, backoff_delay
-                )
-                await asyncio.sleep(backoff_delay)
-                backoff_delay *= 2
-                continue
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="image_upload_timeout",
-                translation_placeholders={"entity_id": entity_id, "attempts": MAX_RETRIES}
-            )
-
-        except requests.exceptions.RequestException as err:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="image_upload_network",
-                translation_placeholders={"entity_id": entity_id, "error": str(err)}
-            ) from err
-
-        except Exception as err:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="image_upload_failed",
-                translation_placeholders={"entity_id": entity_id, "error": str(err)}
-            ) from err
-
 async def upload_to_atc_ble(hass: HomeAssistant, entity_id: str, img: bytes, dither_mode: DitherMode = DitherMode.ORDERED) -> None:
     """Upload an image to ATC BLE tags using the py-atc-ble-oepl library.
 
@@ -412,8 +309,6 @@ async def upload_to_opendisplay(
         ) from err
 
 
-def create_upload_queues() -> tuple[UploadQueueHandler, UploadQueueHandler]:
-    """Create BLE and Hub upload queues with appropriate settings."""
-    ble_queue = UploadQueueHandler(max_concurrent=1, cooldown=0.1)
-    hub_queue = UploadQueueHandler(max_concurrent=1, cooldown=1.0)
-    return ble_queue, hub_queue
+def create_upload_queues() -> UploadQueueHandler:
+    """Create the BLE upload queue."""
+    return UploadQueueHandler(max_concurrent=1, cooldown=0.1)
