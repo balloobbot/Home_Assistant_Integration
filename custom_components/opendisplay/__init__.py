@@ -11,7 +11,6 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er, device_registry as dr, storage
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.helpers.typing import ConfigType
-from .ble import BLEDeviceMetadata
 from .const import DOMAIN
 from .coordinator import Hub
 from .runtime_data import OpenDisplayConfigEntry, OpenDisplayBLERuntimeData
@@ -91,43 +90,28 @@ async def async_remove_clock_mode_buttons(hass: HomeAssistant, entry: ConfigEntr
 async def async_remove_invalid_ble_entities(
         hass: HomeAssistant,
         entry: ConfigEntry,
-        device_metadata: dict
+        device_config,
 ) -> list[str]:
-    """Remove BLE entities that are invalid for current device config.
+    """Remove BLE entities that are invalid for current device config."""
+    from opendisplay import GlobalConfig
 
-    Checks device configuration and removes entities that shouldn't exist based on
-    current hardware/firmware capabilities:
-    - Battery sensors when power_mode == 2 (USB powered)
-    - Future: LED entities when LED config missing
-    - Future: Sensor entities based on sensor config
-
-    Args:
-        hass: Home Assistant instance
-        entry: Configuration entry
-        device_metadata: Current device metadata with OpenDisplay config
-
-    Returns:
-        list[str]: List of removed entity IDs
-    """
     entity_registry = er.async_get(hass)
     removed_entities = []
     mac_address = entry.data.get("mac_address", "")
 
-    # Check power mode - remove battery sensors if not battery/solar powered
-    from .ble import BLEDeviceMetadata
-    metadata = BLEDeviceMetadata(device_metadata)
-    if metadata.power_mode not in (1, 3):  # Not battery (1) or solar (3)
-        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
-            if entity.unique_id and (
-                    f"opendisplay_ble_{mac_address}_battery_percentage" in entity.unique_id or
-                    f"opendisplay_ble_{mac_address}_battery_voltage" in entity.unique_id
-            ):
-                _LOGGER.info("Removing battery sensor (power_mode=%s): %s", metadata.power_mode, entity.entity_id)
-                entity_registry.async_remove(entity.entity_id)
-                removed_entities.append(entity.entity_id)
-
-    # Future: Check LED config presence and remove LED entity if not present
-    # Future: Check sensor configs and remove/add sensor entities accordingly
+    # For OpenDisplay devices, remove battery sensors if not battery/solar powered
+    if isinstance(device_config, GlobalConfig) and device_config.power:
+        pm = device_config.power.power_mode
+        power_mode = pm.value if hasattr(pm, "value") else int(pm)
+        if power_mode not in (1, 3):
+            for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
+                if entity.unique_id and (
+                        f"opendisplay_ble_{mac_address}_battery_percentage" in entity.unique_id or
+                        f"opendisplay_ble_{mac_address}_battery_voltage" in entity.unique_id
+                ):
+                    _LOGGER.info("Removing battery sensor (power_mode=%s): %s", power_mode, entity.entity_id)
+                    entity_registry.async_remove(entity.entity_id)
+                    removed_entities.append(entity.entity_id)
 
     return removed_entities
 
@@ -298,40 +282,69 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
     is_ble_device = entry.data.get("device_type") == "ble"
 
     if is_ble_device:
-        # BLE device setup using simple callback approach
         _LOGGER.debug("Setting up BLE device entry: %s", entry.data.get("name"))
 
         from homeassistant.components import bluetooth
-        from .ble import get_protocol_by_name
+        from homeassistant.components.bluetooth import async_ble_device_from_address
         from datetime import datetime, timezone
 
         mac_address = entry.data.get("mac_address")
         name = entry.data.get("name")
-        device_metadata = entry.data.get("device_metadata", {})
-        protocol_type = entry.data.get("protocol_type", "atc")  # Default to ATC for backward compatibility
+        protocol_type = entry.data.get("protocol_type", "atc")
 
-        # Get protocol handler for this device
-        protocol = get_protocol_by_name(protocol_type)
-        _LOGGER.debug("Setting up BLE device with protocol: %s (manufacturer ID: 0x%04X)",
-                      protocol_type, protocol.manufacturer_id)
-
-        # Store BLE device config in runtime_data for entity access
-        ble_data = OpenDisplayBLERuntimeData(
-            mac_address=mac_address,
-            name=name,
-            device_metadata=device_metadata,
-            protocol_type=protocol_type,
-            sensors={},
-        )
-        entry.runtime_data = ble_data
-
-        # Lightweight presence check - only checks cached advertisement data
+        # Require device to be advertising before attempting connection
         if not bluetooth.async_address_present(hass, mac_address, connectable=False):
             raise ConfigEntryNotReady(
                 translation_domain=DOMAIN,
                 translation_key="ble_device_not_detected",
                 translation_placeholders={"name": name, "mac_address": mac_address},
             )
+
+        # Interrogate device for full typed config
+        ble_device = async_ble_device_from_address(hass, mac_address, connectable=True)
+        if ble_device is None:
+            raise ConfigEntryNotReady(
+                translation_domain=DOMAIN,
+                translation_key="ble_device_not_connectable",
+                translation_placeholders={"name": name, "mac_address": mac_address},
+            )
+
+        try:
+            if protocol_type == "open_display":
+                from opendisplay import OpenDisplayDevice, AuthenticationRequiredError
+                from opendisplay.exceptions import AuthenticationFailedError
+                encryption_key_hex = entry.data.get("encryption_key")
+                encryption_key = bytes.fromhex(encryption_key_hex) if encryption_key_hex else None
+                async with OpenDisplayDevice(mac_address=mac_address, ble_device=ble_device, encryption_key=encryption_key) as device:
+                    await device.read_firmware_version()
+                device_config = device.config
+            else:
+                from py_atc_ble_oepl import ATCDevice
+                async with ATCDevice(mac_address, ble_device, auto_interrogate=False) as device:
+                    device_config = await device.interrogate()
+        except Exception as err:
+            _LOGGER.debug("BLE interrogation failed for %s (%s): %s", name, mac_address, err, exc_info=True)
+            raise ConfigEntryNotReady(
+                translation_domain=DOMAIN,
+                translation_key="ble_interrogation_failed",
+                translation_placeholders={"name": name, "mac_address": mac_address},
+            ) from err
+
+        if protocol_type == "open_display":
+            from opendisplay.protocol import MANUFACTURER_ID as OD_MANUFACTURER_ID
+            adv_manufacturer_id = OD_MANUFACTURER_ID
+        else:
+            from py_atc_ble_oepl.protocol.constants import MANUFACTURER_ID as ATC_MANUFACTURER_ID
+            adv_manufacturer_id = ATC_MANUFACTURER_ID
+
+        ble_data = OpenDisplayBLERuntimeData(
+            mac_address=mac_address,
+            name=name,
+            device_config=device_config,
+            protocol_type=protocol_type,
+            sensors={},
+        )
+        entry.runtime_data = ble_data
 
         if entry.data.get("send_welcome_image", False):
             new_data = dict(entry.data)
@@ -375,16 +388,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
                     "temperature": adv.temperature_c,
                 }
             else:
-                manufacturer_data = service_info.manufacturer_data.get(protocol.manufacturer_id)
+                from py_atc_ble_oepl.protocol.constants import MANUFACTURER_ID as ATC_MANUFACTURER_ID
+                from py_atc_ble_oepl.protocol.atc import ATCProtocol
+
+                manufacturer_data = service_info.manufacturer_data.get(ATC_MANUFACTURER_ID)
                 if not manufacturer_data:
                     _LOGGER.debug(
                         "No manufacturer data for 0x%04X on %s",
-                        protocol.manufacturer_id,
+                        ATC_MANUFACTURER_ID,
                         mac_address,
                     )
                     return
                 try:
-                    advertising_data = protocol.parse_advertising_data(manufacturer_data)
+                    advertising_data = ATCProtocol().parse_advertising_data(manufacturer_data)
                     if not advertising_data:
                         return
                 except Exception as err:
@@ -417,20 +433,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
             _LOGGER.info("Removed deprecated clock mode buttons: %s", removed_clock_buttons)
 
         # Remove invalid entities based on the current device config
-        removed_invalid = await async_remove_invalid_ble_entities(hass, entry, device_metadata)
+        removed_invalid = await async_remove_invalid_ble_entities(hass, entry, device_config)
         if removed_invalid:
             _LOGGER.info("Removed invalid BLE entities: %s", removed_invalid)
 
         # Set up BLE-specific platforms FIRST (before callback registration)
-        # This ensures sensor entities exist before any advertising callbacks fire
         await hass.config_entries.async_forward_entry_setups(entry, BLE_PLATFORMS)
 
         # Register BLE advertising listener with protocol-specific manufacturer ID
-        # This must happen AFTER platforms are set up so sensors can receive updates
         unregister_callback = bluetooth.async_register_callback(
             hass,
             _ble_device_found,
-            {"manufacturer_id": protocol.manufacturer_id},
+            {"manufacturer_id": adv_manufacturer_id},
             bluetooth.BluetoothScanningMode.ACTIVE,
         )
 
@@ -679,13 +693,22 @@ async def _send_welcome_image(
         if not entry:
             return
 
-        device_metadata = entry.data.get("device_metadata", {})
+        from opendisplay import GlobalConfig
+        from epaper_dithering import ColorScheme
 
-        metadata = BLEDeviceMetadata(device_metadata)
-
-        width = metadata.width
-        height = metadata.height
-        color_scheme = metadata.color_scheme
+        device_config = entry.runtime_data.device_config
+        if isinstance(device_config, GlobalConfig):
+            display = device_config.displays[0] if device_config.displays else None
+            if not display:
+                return
+            width = display.pixel_width
+            height = display.pixel_height
+            cs = display.color_scheme_enum
+            color_scheme = cs if isinstance(cs, ColorScheme) else ColorScheme.from_value(cs)
+        else:
+            width = device_config.width
+            height = device_config.height
+            color_scheme = ColorScheme.from_value(device_config.color_scheme)
 
         colors = list(color_scheme.palette.colors.keys())
         use_blue_logo = "blue" in colors

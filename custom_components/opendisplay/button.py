@@ -12,7 +12,6 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 import logging
 
-from .ble import get_protocol_by_name
 from .entity import OpenDisplayTagEntity, OpenDisplayAPEntity, OpenDisplayBLEEntity
 from .runtime_data import OpenDisplayConfigEntry
 from .tag_types import get_tag_types_manager
@@ -155,18 +154,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry,
     is_ble_device = is_ble_entry(entry_data)
 
     if is_ble_device:
-        # BLE device setup - create clock mode buttons
         mac_address = entry_data.mac_address
         name = entry_data.name
-        device_metadata = entry_data.device_metadata
-        protocol_type = entry_data.protocol_type  # Default to ATC for backward compatibility
+        protocol_type = entry_data.protocol_type
 
         ble_buttons = []
 
         # Add refresh config button for OpenDisplay devices only
         if protocol_type == "open_display":
             ble_buttons.append(
-                RefreshConfigButton(mac_address, name, device_metadata, protocol_type, entry)
+                RefreshConfigButton(mac_address, name, entry)
             )
 
         async_add_entities(ble_buttons)
@@ -402,182 +399,100 @@ class RefreshTagTypesButton(OpenDisplayAPEntity, ButtonEntity):
 
 
 class RefreshConfigButton(OpenDisplayBLEEntity, ButtonEntity):
-    """
-    Button to refresh OpenDisplay device configuration.
-
-    Creates a button entity that re-interrogates an OpenDisplay device to fetch
-    updated configuration and update the device metadata in Home Assistant.
-    This is useful when the device configuration has been changed externally.
-    """
+    """Button to re-interrogate an OpenDisplay device and update its stored config."""
 
     _attr_entity_registry_enabled_default = True
 
-    def __init__(self,
-                 mac_address: str,
-                 name: str,
-                 device_metadata: dict,
-                 protocol_type: str,
-                 entry: OpenDisplayConfigEntry
-                 ) -> None:
-        """Initialize the button entity.
-
-        Args:
-            mac_address: MAC address of the BLE device
-            name: Human-readable name for the device
-            device_metadata: Device metadata dictionary
-            protocol_type: BLE protocol type (should be "open_display")
-            entry: Configuration entry for the device
-        """
+    def __init__(self, mac_address: str, name: str, entry: OpenDisplayConfigEntry) -> None:
         super().__init__(mac_address, name, entry)
-
-        self._device_metadata = device_metadata
-        self._entry_id = entry.entry_id
-        self._protocol_type = protocol_type
         self._attr_translation_key = "refresh_config"
         self._attr_unique_id = f"ble_{mac_address}_refresh_config"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
-        # Get protocol handler for service UUID
-        self._protocol = get_protocol_by_name(protocol_type)
-        self._service_uuid = self._protocol.service_uuid
-
     async def async_press(self) -> None:
-        """Re-interrogate device and update configuration."""
-        from .ble import BLEConnection, get_protocol_by_name
-        from .ble.tlv_parser import config_to_dict, generate_model_name
+        """Re-interrogate device, update stored metadata and runtime config."""
+        from homeassistant.components.bluetooth import async_ble_device_from_address
         from homeassistant.helpers import device_registry as dr
+        from opendisplay import OpenDisplayDevice
+        from epaper_dithering import ColorScheme
+        from . import async_remove_invalid_ble_entities
 
-        _LOGGER.info("Refreshing configuration for OpenDisplay device %s", self._mac_address)
+        _LOGGER.info("Refreshing configuration for %s", self._mac_address)
 
         try:
-            # Get protocol handler
-            protocol = get_protocol_by_name(self._protocol_type)
-            fw_info = None
+            encryption_key_hex = self._entry.data.get("encryption_key")
+            encryption_key = bytes.fromhex(encryption_key_hex) if encryption_key_hex else None
 
-            # Connect and interrogate device
-            async with BLEConnection(self.hass, self._mac_address, self._service_uuid, protocol) as conn:
-                capabilities = await protocol.interrogate_device(conn)
-                try:
-                    fw_info = await protocol.read_firmware_version(conn)
-                except Exception as fw_err:
-                    _LOGGER.warning(
-                        "Failed to read firmware version for %s: %s",
-                        self._mac_address,
-                        fw_err,
-                    )
-
-                if not capabilities:
-                    raise HomeAssistantError(
-                        translation_domain=DOMAIN,
-                        translation_key="config_flow_invalid_config"
-                    )
-
-                # Get updated config from protocol
-                config = protocol._last_config
-
-                if not config:
-                    raise HomeAssistantError(
-                        translation_domain=DOMAIN,
-                        translation_key="config_flow_missing_config"
-                    )
-
-                # Store complete OpenDisplay config
-                new_metadata = {
-                    "open_display_config": config_to_dict(config),
-                }
-                if fw_info:
-                    new_metadata["fw_version"] = fw_info.get("version")
-                    new_metadata["fw_version_raw"] = fw_info.get("raw")
-                    if fw_info.get("sha"):
-                        new_metadata["fw_sha"] = fw_info["sha"]
-                elif "fw_version" in self._device_metadata:
-                    # Preserve the previously known firmware version if read fails
-                    new_metadata["fw_version"] = self._device_metadata.get("fw_version")
-                    if "fw_version_raw" in self._device_metadata:
-                        new_metadata["fw_version_raw"] = self._device_metadata.get("fw_version_raw")
-                    if "fw_sha" in self._device_metadata:
-                        new_metadata["fw_sha"] = self._device_metadata.get("fw_sha")
-
-                # Generate and store model name
-                if config.displays:
-                    model_name = generate_model_name(config.displays[0])
-                    new_metadata["model_name"] = model_name
-                else:
-                    model_name = self._device_metadata.get('model_name', 'Unknown')
-                    new_metadata["model_name"] = model_name
-
-                # Log configuration changes
-                old_config = self._device_metadata.get("open_display_config", {})
-                new_config_data = new_metadata.get("open_display_config", {})
-
-                if old_config != new_config_data:
-                    changes = _compare_configs(old_config, new_config_data)
-
-                    if changes:
-                        # Build complete log message as multi-line string
-                        log_lines = [f"Configuration changes for {self._mac_address}:"]
-
-                        # Group changes by top-level section
-                        sections = {}
-                        for field_path, old_val, new_val in changes:
-                            section = field_path.split('.')[0].split('[')[0]
-                            if section not in sections:
-                                sections[section] = []
-                            sections[section].append((field_path, old_val, new_val))
-
-                        # Build section change lines
-                        for section in ["power", "displays", "leds", "sensors", "buses", "inputs", "system",
-                                        "manufacturer"]:
-                            if section in sections:
-                                log_lines.append(f"  {section.title()}:")
-                                for field_path, old_val, new_val in sections[section]:
-                                    # Format values for readability
-                                    old_str = _format_value(old_val)
-                                    new_str = _format_value(new_val)
-                                    log_lines.append(f"    {field_path}: {old_str} → {new_str}")
-
-                        # Log complete message in a single statement
-                        _LOGGER.info("\n".join(log_lines))
-                else:
-                    _LOGGER.info("No configuration changes for %s", self._mac_address)
-
-                # Update config entry (persisted data)
-                self.hass.config_entries.async_update_entry(
-                    self._entry,
-                    data={**self._entry.data, "device_metadata": new_metadata}
+            ble_device = async_ble_device_from_address(self.hass, self._mac_address, connectable=True)
+            if ble_device is None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="ble_device_not_connectable",
+                    translation_placeholders={"name": self._name, "mac_address": self._mac_address},
                 )
 
-                # Update runtime_data so existing entities pick up new metadata
-                self._entry.runtime_data.device_metadata = new_metadata
-                self._device_metadata = new_metadata
+            async with OpenDisplayDevice(mac_address=self._mac_address, ble_device=ble_device, encryption_key=encryption_key) as device:
+                fw = await device.read_firmware_version()
 
-                # Update device registry attributes
-                device_registry = dr.async_get(self.hass)
-                device = device_registry.async_get_device(
-                    identifiers={(DOMAIN, f"ble_{self._mac_address}")}
+            global_config = device.config
+            if not global_config or not global_config.displays:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="config_flow_invalid_config",
                 )
 
-                if device:
-                    sw_version = fw_info.get("version") if fw_info else device.sw_version
-                    device_registry.async_update_device(
-                        device.id,
-                        hw_version=f"{capabilities.width}x{capabilities.height}",
-                        model=model_name,
-                        sw_version=str(sw_version) if sw_version else None,
-                    )
+            display = global_config.displays[0]
+            if display.screen_diagonal_inches is not None:
+                size = f'{display.screen_diagonal_inches:.1f}"'
+            else:
+                size = f"{display.pixel_width}x{display.pixel_height}"
+            cs_enum = display.color_scheme_enum
+            cs_name = str(cs_enum) if isinstance(cs_enum, int) else cs_enum.name
+            model_name = f"{size} {cs_name}"
 
-                # Remove entities that will become invalid with the new config
-                from . import async_remove_invalid_ble_entities
-                removed = await async_remove_invalid_ble_entities(self.hass, self._entry, new_metadata)
-                if removed:
-                    _LOGGER.info("Removed invalid entities: %s", removed)
+            power_mode = 1
+            if global_config.power:
+                pm = global_config.power.power_mode
+                power_mode = pm.value if hasattr(pm, "value") else int(pm)
 
-                # Reload integration to re-create entities based on the new config
-                _LOGGER.info("Reloading integration to apply config changes for %s", self._mac_address)
-                await self.hass.config_entries.async_reload(self._entry_id)
+            new_metadata = {
+                "width": display.pixel_width,
+                "height": display.pixel_height,
+                "color_scheme": display.color_scheme,
+                "model_name": model_name,
+                "fw_version": f"{fw['major']}.{fw['minor']}" if fw else self._entry.data.get("device_metadata", {}).get("fw_version"),
+                "power_mode": power_mode,
+            }
 
-                _LOGGER.info("Successfully refreshed configuration for %s", self._mac_address)
+            # Persist updated flat metadata
+            self.hass.config_entries.async_update_entry(
+                self._entry,
+                data={**self._entry.data, "device_metadata": new_metadata},
+            )
 
+            # Update in-memory runtime config to the fresh GlobalConfig
+            self._entry.runtime_data.device_config = global_config
+
+            # Update device registry
+            device_registry = dr.async_get(self.hass)
+            device = device_registry.async_get_device(identifiers={(DOMAIN, f"ble_{self._mac_address}")})
+            if device:
+                device_registry.async_update_device(
+                    device.id,
+                    hw_version=f"{display.pixel_width}x{display.pixel_height}",
+                    model=model_name,
+                    sw_version=new_metadata.get("fw_version"),
+                )
+
+            removed = await async_remove_invalid_ble_entities(self.hass, self._entry, global_config)
+            if removed:
+                _LOGGER.info("Removed invalid entities after config refresh: %s", removed)
+
+            _LOGGER.info("Reloading integration to apply config changes for %s", self._mac_address)
+            await self.hass.config_entries.async_reload(self._entry.entry_id)
+
+        except HomeAssistantError:
+            raise
         except Exception as e:
             _LOGGER.error("Failed to refresh configuration for %s: %s", self._mac_address, e)
             raise HomeAssistantError(

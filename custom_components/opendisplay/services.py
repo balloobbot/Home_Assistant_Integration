@@ -11,7 +11,6 @@ from homeassistant.exceptions import ServiceValidationError, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .coordinator import Hub
-from .ble import BLEDeviceMetadata
 from .const import DOMAIN, SIGNAL_TAG_IMAGE_UPDATE
 from epaper_dithering import DitherMode
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -140,6 +139,9 @@ async def _get_ap_tag_dimensions(hass: HomeAssistant, entity_id: str) -> tuple[i
 
 
 async def _get_ble_tag_dimensions(hass: HomeAssistant, entity_id: str) -> tuple[int, int, str]:
+    from opendisplay import GlobalConfig
+    from epaper_dithering import ColorScheme
+
     try:
         tag_mac = entity_id.split(".")[1].upper()
     except IndexError:
@@ -149,25 +151,36 @@ async def _get_ble_tag_dimensions(hass: HomeAssistant, entity_id: str) -> tuple[
             translation_placeholders={"entity_id": entity_id},
         )
 
-    device_metadata = None
+    runtime_data = None
     for entry in hass.config_entries.async_entries(DOMAIN):
-        runtime_data = getattr(entry, "runtime_data", None)
-        if isinstance(runtime_data, OpenDisplayBLERuntimeData):
-            if runtime_data.mac_address.upper() == tag_mac:
-                device_metadata = runtime_data.device_metadata
-                break
+        rd = getattr(entry, "runtime_data", None)
+        if isinstance(rd, OpenDisplayBLERuntimeData) and rd.mac_address.upper() == tag_mac:
+            runtime_data = rd
+            break
 
-    if not device_metadata:
+    if runtime_data is None:
         raise HomeAssistantError(
             translation_domain=DOMAIN,
             translation_key="ble_no_metadata",
             translation_placeholders={"entity_id": entity_id},
         )
 
-    metadata = BLEDeviceMetadata(device_metadata)
-    color_scheme = metadata.color_scheme
-    accent_color = color_scheme.accent_color
-    return metadata.width, metadata.height, accent_color
+    device_config = runtime_data.device_config
+    if isinstance(device_config, GlobalConfig):
+        display = device_config.displays[0] if device_config.displays else None
+        if not display:
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="ble_no_metadata",
+                                     translation_placeholders={"entity_id": entity_id})
+        width = display.pixel_width
+        height = display.pixel_height
+        cs = display.color_scheme_enum
+        color_scheme = cs if isinstance(cs, ColorScheme) else ColorScheme.from_value(cs)
+    else:
+        width = device_config.width
+        height = device_config.height
+        color_scheme = ColorScheme.from_value(device_config.color_scheme)
+
+    return width, height, color_scheme.accent_color
 
 
 async def _get_tag_dimensions(hass: HomeAssistant, entity_id: str, is_ble: bool) -> tuple[int, int, str]:

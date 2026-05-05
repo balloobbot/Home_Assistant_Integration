@@ -6,7 +6,6 @@ from homeassistant.components import bluetooth
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
-from .ble import BLEDeviceMetadata
 
 from .const import DOMAIN, OPENDISPLAY_CONFIG_URL, ATC_CONFIG_URL
 from .tag_types import get_hw_string, get_hw_dimensions
@@ -181,25 +180,41 @@ class OpenDisplayBLEEntity(Entity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for the BLE device."""
+        from opendisplay import GlobalConfig
+        from epaper_dithering import ColorScheme
 
-        current_metadata = self._entry.runtime_data.device_metadata
-        metadata = BLEDeviceMetadata(current_metadata)
+        runtime = self._entry.runtime_data
+        device_config = runtime.device_config
+        meta = self._entry.data.get("device_metadata", {})
 
-        device_info = {
-            "identifiers": {(DOMAIN, f"ble_{self._mac_address}")},
-            "name": self._name,
-            "manufacturer": "OpenDisplay",
-            "model": metadata.model_name,
-            "sw_version": metadata.formatted_fw_version(),
-            "hw_version": f"{metadata.width}x{metadata.height}" if metadata.width and metadata.height else None,
-        }
-
-        if metadata.is_open_display:
-            device_info["configuration_url"] = OPENDISPLAY_CONFIG_URL
+        if isinstance(device_config, GlobalConfig):
+            display = device_config.displays[0] if device_config.displays else None
+            width = display.pixel_width if display else 0
+            height = display.pixel_height if display else 0
+            configuration_url = OPENDISPLAY_CONFIG_URL
         else:
-            device_info["configuration_url"] = ATC_CONFIG_URL
+            width = device_config.width
+            height = device_config.height
+            configuration_url = ATC_CONFIG_URL
 
-        return DeviceInfo(**device_info)
+        model_name = meta.get("model_name", "Unknown")
+        fw_version = meta.get("fw_version")
+        if fw_version in (None, "", 0):
+            sw_version = None
+        elif isinstance(fw_version, int):
+            sw_version = f"0x{fw_version:04x}"
+        else:
+            sw_version = str(fw_version)
+
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"ble_{self._mac_address}")},
+            name=self._name,
+            manufacturer="OpenDisplay",
+            model=model_name,
+            sw_version=sw_version,
+            hw_version=f"{width}x{height}" if width and height else None,
+            configuration_url=configuration_url,
+        )
 
     @property
     def available(self) -> bool:

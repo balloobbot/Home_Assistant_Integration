@@ -15,7 +15,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .ble import BLEDeviceMetadata
 from .const import DOMAIN
 from .entity import OpenDisplayBLEEntity
 from .runtime_data import OpenDisplayBLERuntimeData
@@ -50,8 +49,7 @@ async def async_setup_entry(
         enabled = async_is_preview_feature_enabled(hass, DOMAIN, "opendisplay_ble_updates")
 
         if enabled and entry.entry_id not in added:
-            metadata = BLEDeviceMetadata(entry_data.device_metadata or {})
-            if not metadata.is_open_display:
+            if entry_data.protocol_type != "open_display":
                 _LOGGER.debug(
                     "Skipping update entity for %s (not OpenDisplay)", entry_data.mac_address
                 )
@@ -118,9 +116,7 @@ class OpenDisplayBleUpdateEntity(OpenDisplayBLEEntity, UpdateEntity):
         return True
 
     def _compute_installed_version(self) -> str | None:
-        metadata_dict = self._entry_data.device_metadata or {}
-        metadata = BLEDeviceMetadata(metadata_dict)
-        fw = metadata.fw_version
+        fw = self._entry.data.get("device_metadata", {}).get("fw_version")
         if fw not in ("", 0, None):
             _LOGGER.debug("Firmware from metadata for %s: %s", self._mac, fw)
             return str(fw)

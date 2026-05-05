@@ -32,13 +32,10 @@ async def async_setup_entry(
     if is_ble_entry(entry_data):
         mac_address = entry_data.mac_address
         name = entry_data.name
-        device_metadata = entry_data.device_metadata
-
         image_entity = OpenDisplayBLEImage(
             hass=hass,
             mac_address=mac_address,
             name=name,
-            device_metadata=device_metadata,
             entry=entry,
         )
         async_add_entities([image_entity], True)
@@ -257,13 +254,11 @@ class OpenDisplayBLEImage(OpenDisplayBLEEntity, ImageEntity):
             hass: HomeAssistant,
             mac_address: str,
             name: str,
-            device_metadata: dict,
             entry: OpenDisplayConfigEntry,
     ):
         """Initialize the BLE image entity."""
         ImageEntity.__init__(self, hass)
         OpenDisplayBLEEntity.__init__(self, mac_address, name, entry)
-        self._device_metadata = device_metadata
         self._attr_translation_key = "content"
         self._attr_unique_id = f"opendisplay_ble_{mac_address}_display_content"
         self._attr_content_type = "image/jpeg"

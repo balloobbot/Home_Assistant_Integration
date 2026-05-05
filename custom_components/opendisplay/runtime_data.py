@@ -7,6 +7,9 @@ from homeassistant.config_entries import ConfigEntry
 
 if TYPE_CHECKING:
     from .coordinator import Hub
+    from opendisplay import GlobalConfig
+    from py_atc_ble_oepl import DeviceCapabilities
+
 
 @dataclass
 class OpenDisplayBLERuntimeData:
@@ -14,7 +17,7 @@ class OpenDisplayBLERuntimeData:
 
     mac_address: str
     name: str
-    device_metadata: dict
+    device_config: "GlobalConfig | DeviceCapabilities"
     protocol_type: str
     sensors: dict[str, Any] = field(default_factory=dict)
 

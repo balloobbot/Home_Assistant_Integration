@@ -18,7 +18,6 @@ from .entity import OpenDisplayBLEEntity
 from .runtime_data import OpenDisplayConfigEntry, OpenDisplayBLERuntimeData
 
 from .const import DOMAIN
-from .ble import turn_led_on, turn_led_off, get_protocol_by_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,10 +35,9 @@ async def async_setup_entry(
 
     mac_address = entry_data.mac_address
     name = entry_data.name
-    device_metadata = entry_data.device_metadata
-    protocol_type = entry_data.protocol_type  # Default to ATC for backward compatibility
+    protocol_type = entry_data.protocol_type
 
-    # Skip LED entity for OpenDisplay devices - LED config not yet implemented
+    # LED only supported on ATC devices
     if protocol_type == "open_display":
         return
 
@@ -47,8 +45,6 @@ async def async_setup_entry(
         hass=hass,
         mac_address=mac_address,
         name=name,
-        device_metadata=device_metadata,
-        protocol_type=protocol_type,
         entry=entry,
     )
 
@@ -65,18 +61,13 @@ class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
             hass: HomeAssistant,
             mac_address: str,
             name: str,
-            device_metadata: dict,
-            protocol_type: str,
             entry: OpenDisplayConfigEntry,
     ) -> None:
         """Initialize the BLE light entity."""
         super().__init__(mac_address, name, entry)
         self._hass = hass
-        self._device_metadata = device_metadata
         self._is_on = False
         self._auto_off_task = None
-        self._protocol = get_protocol_by_name(protocol_type)
-        self._service_uuid = self._protocol.service_uuid
         self._attr_translation_key = "led"
 
     @property
@@ -106,49 +97,47 @@ class OpenDisplayBLELight(OpenDisplayBLEEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
+        from homeassistant.components.bluetooth import async_ble_device_from_address
+        from py_atc_ble_oepl import ATCDevice
+        from py_atc_ble_oepl.protocol.constants import CMD_LED_ON
+
         try:
-            success = await turn_led_on(self.hass, self._mac_address, self._service_uuid, self._protocol)
-            if success:
-                self._is_on = True
-                self.async_write_ha_state()
-                if self._auto_off_task and not self._auto_off_task.done():
-                    self._auto_off_task.cancel()
-                self._auto_off_task = asyncio.create_task(self._auto_off_timer())
-            else:
-                self.async_write_ha_state()
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="led_on_failed"
-                )
+            ble_device = async_ble_device_from_address(self.hass, self._mac_address, connectable=True)
+            async with ATCDevice(self._mac_address, ble_device, auto_interrogate=False) as dev:
+                await dev._connection.write_command(CMD_LED_ON)
+            self._is_on = True
+            self.async_write_ha_state()
+            if self._auto_off_task and not self._auto_off_task.done():
+                self._auto_off_task.cancel()
+            self._auto_off_task = asyncio.create_task(self._auto_off_timer())
         except Exception as e:
             self.async_write_ha_state()
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="led_on_error",
-                translation_placeholders={"error": str(e)}
+                translation_placeholders={"error": str(e)},
             ) from e
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
+        from homeassistant.components.bluetooth import async_ble_device_from_address
+        from py_atc_ble_oepl import ATCDevice
+        from py_atc_ble_oepl.protocol.constants import CMD_LED_OFF
+
         try:
             if self._auto_off_task and not self._auto_off_task.done():
                 self._auto_off_task.cancel()
-            success = await turn_led_off(self.hass, self._mac_address, self._service_uuid, self._protocol)
-            if success:
-                self._is_on = False
-                self.async_write_ha_state()
-            else:
-                self.async_write_ha_state()
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="led_off_failed",
-                )
+            ble_device = async_ble_device_from_address(self.hass, self._mac_address, connectable=True)
+            async with ATCDevice(self._mac_address, ble_device, auto_interrogate=False) as dev:
+                await dev._connection.write_command(CMD_LED_OFF)
+            self._is_on = False
+            self.async_write_ha_state()
         except Exception as e:
             self.async_write_ha_state()
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="led_off_error",
-                translation_placeholders= {"error": str(e)}
+                translation_placeholders={"error": str(e)},
             ) from e
 
     async def async_update(self) -> None:

@@ -542,14 +542,12 @@ class OpenDisplayBLESensor(OpenDisplayBLEEntity, SensorEntity):
             hass: HomeAssistant,
             mac_address: str,
             name: str,
-            device_metadata: dict,
             entry: OpenDisplayConfigEntry,
             description: OpenDisplaySensorEntityDescription,
     ) -> None:
         """Initialize the BLE sensor entity."""
         super().__init__(mac_address, name, entry)
         self._hass = hass
-        self._device_metadata = device_metadata
         self._description = description
         self._sensor_data = {}
         self._attr_entity_registry_enabled_default = description.entity_registry_enabled_default
@@ -624,29 +622,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry, 
         # Set up BLE sensors with a simple callback approach
         mac_address = entry_data.mac_address
         name = entry_data.name
-        device_metadata = entry_data.device_metadata
-        protocol_type = entry_data.protocol_type  # Default to ATC for backward compatibility
+        protocol_type = entry_data.protocol_type
 
-        # Create sensors for each description
-        from .ble import BLEDeviceMetadata
-        metadata = BLEDeviceMetadata(device_metadata)
+        from opendisplay import GlobalConfig
+
+        device_config = entry_data.device_config
         sensors = []
         for description in BLE_SENSOR_TYPES:
-            # Handle battery sensors based on device protocol
             if description.key in ("battery_percentage", "battery_voltage"):
-                if protocol_type == "atc":
-                    # ATC devices always have batteries
-                    pass  # Continue to create sensor
-                elif protocol_type == "open_display":
-                    # OpenDisplay devices: only create battery sensors for battery/solar power
-                    if metadata.power_mode not in (1, 3):  # Not battery (1) or solar (3)
-                        continue  # Skip battery sensors
+                if protocol_type == "open_display" and isinstance(device_config, GlobalConfig):
+                    if device_config.power:
+                        pm = device_config.power.power_mode
+                        power_mode = pm.value if hasattr(pm, "value") else int(pm)
+                        if power_mode not in (1, 3):
+                            continue
 
             sensor = OpenDisplayBLESensor(
                 hass=hass,
                 mac_address=mac_address,
                 name=name,
-                device_metadata=device_metadata,
                 entry=entry,
                 description=description,
             )

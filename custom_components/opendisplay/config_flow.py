@@ -18,11 +18,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import TextSelectorType
 
 from .const import DOMAIN, CONF_ENCRYPTION_KEY
-from .ble import (
-    get_protocol_by_manufacturer_id,
-    UnsupportedProtocolError,
-    ConfigValidationError,
-)
 from .tag_types import get_hw_string
 from .util import is_ble_entry
 import logging
@@ -180,38 +175,39 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         self._discovery_info = discovery_info
 
-        # Detect protocol from manufacturer data
-        manufacturer_id = None
-        manufacturer_data = b''
+        from opendisplay.protocol import MANUFACTURER_ID as OD_MANUFACTURER_ID
+        from opendisplay import parse_advertisement
+        from py_atc_ble_oepl.protocol.constants import MANUFACTURER_ID as ATC_MANUFACTURER_ID
+        from py_atc_ble_oepl.protocol.atc import ATCProtocol
 
-        # Check for known manufacturer IDs (ATC: 4919, OpenDisplay: 9286)
-        for mfg_id, mfg_data in discovery_info.manufacturer_data.items():
-            if mfg_id in (4919, 9286):
-                manufacturer_id = mfg_id
-                manufacturer_data = mfg_data
-                break
-
-        if manufacturer_id is None:
+        # ATC: 0x1337 (4919), OpenDisplay: 0x2446 (9286)
+        if OD_MANUFACTURER_ID in discovery_info.manufacturer_data:
+            protocol_type = "open_display"
+            raw = discovery_info.manufacturer_data[OD_MANUFACTURER_ID]
+            try:
+                adv = parse_advertisement(raw)
+                battery_mv = adv.battery_mv
+            except Exception as e:
+                _LOGGER.error("Failed to parse OpenDisplay advertisement: %s", e)
+                return self.async_abort(reason="invalid_advertising_data")
+            hw_type = 0
+            fw_version = 0
+            adv_version = 0
+        elif ATC_MANUFACTURER_ID in discovery_info.manufacturer_data:
+            protocol_type = "atc"
+            raw = discovery_info.manufacturer_data[ATC_MANUFACTURER_ID]
+            try:
+                atc_adv = ATCProtocol().parse_advertising_data(raw)
+                battery_mv = atc_adv.battery_mv
+                hw_type = atc_adv.hw_type
+                fw_version = atc_adv.fw_version
+                adv_version = atc_adv.version
+            except Exception as e:
+                _LOGGER.error("Failed to parse ATC advertisement: %s", e)
+                return self.async_abort(reason="invalid_advertising_data")
+        else:
             _LOGGER.error("No supported manufacturer ID found in advertising data")
             return self.async_abort(reason="unsupported_protocol")
-
-        # Get protocol handler
-        try:
-            protocol = get_protocol_by_manufacturer_id(manufacturer_id)
-            _LOGGER.debug("Detected protocol: %s (manufacturer ID: 0x%04X)",
-                         protocol.protocol_name, manufacturer_id)
-        except UnsupportedProtocolError:
-            _LOGGER.error("Unsupported manufacturer ID: 0x%04X", manufacturer_id)
-            return self.async_abort(reason="unsupported_protocol")
-
-        # Parse advertising data using protocol-specific parser
-        try:
-            advertising_data = protocol.parse_advertising_data(manufacturer_data)
-            if not advertising_data:
-                raise ValueError("Failed to parse advertising data")
-        except Exception as e:
-            _LOGGER.error("Failed to parse advertising data: %s", e)
-            return self.async_abort(reason="invalid_advertising_data")
 
         device_name = discovery_info.name or f"OpenDisplay_BLE_{discovery_info.address[-8:].replace(':', '')}"
 
@@ -219,11 +215,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "address": discovery_info.address,
             "name": device_name,
             "rssi": discovery_info.rssi,
-            "hw_type": advertising_data.hw_type,
-            "battery_mv": advertising_data.battery_mv,
-            "fw_version": advertising_data.fw_version,
-            "version": advertising_data.version,
-            "protocol_type": protocol.protocol_name,  # Store protocol type
+            "hw_type": hw_type,
+            "battery_mv": battery_mv,
+            "fw_version": fw_version,
+            "version": adv_version,
+            "protocol_type": protocol_type,
         }
         _LOGGER.debug("Discovered device info: %s", self._discovered_device)
 
@@ -312,10 +308,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                     device_config = device.config
                     if not device_config or not device_config.displays:
-                        raise ConfigValidationError(
-                            translation_domain=DOMAIN,
-                            translation_key="config_flow_invalid_config",
-                        )
+                        raise ValueError("Invalid device config: no displays")
 
                     display = device_config.displays[0]
                     color_scheme_val = display.color_scheme
@@ -356,21 +349,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=self._discovered_device["name"],
                     data=entry_data,
-                )
-
-            except ConfigValidationError as e:
-                _LOGGER.error("Invalid device configuration: %s", e)
-                return self.async_show_form(
-                    step_id="bluetooth_confirm",
-                    errors={"base": "invalid_device_config"},
-                    description_placeholders={
-                        "name": self._discovered_device["name"],
-                        "address": self._discovered_device["address"],
-                        "rssi": str(self._discovered_device["rssi"]),
-                        "battery": f"{self._discovered_device['battery_mv']/1000:.2f}V" if self._discovered_device["battery_mv"] > 0 else "Unknown",
-                        "fw_version": str(self._discovered_device["fw_version"]) if self._discovered_device["fw_version"] > 0 else "Unknown",
-                        "config_version": str(self._discovered_device["version"]) if self._discovered_device["version"] > 0 else "Unknown",
-                    },
                 )
 
             except Exception as e:

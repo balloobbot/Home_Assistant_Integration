@@ -296,6 +296,8 @@
   },
   "exceptions": {
     "ble_device_not_detected": { "message": "BLE device {name} ({mac_address}) not detected in Bluetooth range." },
+    "ble_device_not_connectable": { "message": "BLE device {name} ({mac_address}) is advertising but not connectable." },
+    "ble_interrogation_failed": { "message": "Failed to interrogate BLE device {name} ({mac_address})." },
     "ap_cannot_connect": { "message": "Cannot connect to AP at {host}: {error}" },
     "ap_failed_load_tags": { "message": "Failed to load tags from AP at {host}: {error}" },
     "ap_timeout_action": { "message": "Timeout during {action}." },
