@@ -18,7 +18,7 @@ _LOGGER: Final = logging.getLogger(__name__)
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for OpenDisplay BLE devices."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         self._discovery_info: BluetoothServiceInfoBleak | None = None
@@ -32,7 +32,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         _LOGGER.debug("BLE Discovery - Name: '%s', Address: %s",
                      discovery_info.name, discovery_info.address)
 
-        await self.async_set_unique_id(f"opendisplay_ble_{discovery_info.address}")
+        await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
 
         self._discovery_info = discovery_info
@@ -179,10 +179,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
 
                 entry_data: dict[str, Any] = {
-                    "mac_address": self._discovered_device["address"],
-                    "name": self._discovered_device["name"],
                     "device_metadata": device_metadata,
-                    "device_type": "ble",
                     "protocol_type": self._discovered_device["protocol_type"],
                     "send_welcome_image": True,
                 }
