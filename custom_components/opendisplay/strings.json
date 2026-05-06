@@ -65,15 +65,6 @@
       "firmware": {
         "name": "Firmware"
       },
-      "opendisplay_ble_firmware": {
-        "name": "OpenDisplay Firmware"
-      }
-    }
-  },
-  "preview_features": {
-    "opendisplay_ble_updates": {
-      "name": "OpenDisplay firmware updates",
-      "description": "Shows a firmware update entity for OpenDisplay BLE tags that compares the installed firmware to the latest OpenDisplay_BLE GitHub release. Install is not available yet."
     }
   },
   "exceptions": {

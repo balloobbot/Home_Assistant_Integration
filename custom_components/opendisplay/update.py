@@ -4,21 +4,18 @@ from datetime import datetime, timedelta
 import logging
 
 from awesomeversion import AwesomeVersion
-from homeassistant.components.labs import async_is_preview_feature_enabled, async_listen
 from homeassistant.components.update import (
     UpdateDeviceClass,
     UpdateEntity,
     UpdateEntityFeature,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .entity import OpenDisplayBLEEntity
 from .runtime_data import OpenDisplayBLERuntimeData
-from .util import is_ble_entry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,59 +27,19 @@ CACHE_DURATION = timedelta(hours=6)
 async def async_setup_entry(
         hass: HomeAssistant, entry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up OpenDisplay firmware update entity for BLE entries when Labs is enabled."""
     entry_data = entry.runtime_data
-    if not is_ble_entry(entry_data):
+    if not isinstance(entry_data, OpenDisplayBLERuntimeData):
         return
-
-    added: dict[str, OpenDisplayBleUpdateEntity] = {}
-
-    async def _remove_entity(entity: "OpenDisplayBleUpdateEntity") -> None:
-        await entity.async_remove()
-        if entity.entity_id:
-            from homeassistant.helpers import entity_registry as er
-
-            er.async_get(hass).async_remove(entity.entity_id)
-
-    @callback
-    def _sync_feature_state() -> None:
-        enabled = async_is_preview_feature_enabled(hass, DOMAIN, "opendisplay_ble_updates")
-
-        if enabled and entry.entry_id not in added:
-            if entry_data.protocol_type != "open_display":
-                _LOGGER.debug(
-                    "Skipping update entity for %s (not OpenDisplay)", entry.unique_id
-                )
-                return  # OpenDisplay-only
-            _LOGGER.debug(
-                "Enabling OpenDisplay firmware update entity for %s", entry.unique_id
-            )
-            entity = OpenDisplayBleUpdateEntity(hass, entry, entry_data)
-            added[entry.entry_id] = entity
-            async_add_entities([entity])
-            return
-
-        if not enabled and (entity := added.pop(entry.entry_id, None)):
-            _LOGGER.debug(
-                "Labs disabled; removing OpenDisplay firmware update entity for %s",
-                entry.unique_id,
-            )
-            hass.async_create_task(_remove_entity(entity))
-
-    # Listen for Labs toggle
-    entry.async_on_unload(
-        async_listen(hass, DOMAIN, "opendisplay_ble_updates", _sync_feature_state)
-    )
-
-    # Apply current state
-    _sync_feature_state()
+    if entry_data.protocol_type != "open_display":
+        return
+    async_add_entities([OpenDisplayBleUpdateEntity(hass, entry, entry_data)])
 
 
 class OpenDisplayBleUpdateEntity(OpenDisplayBLEEntity, UpdateEntity):
     """Firmware update indicator for OpenDisplay tags."""
 
     _attr_has_entity_name = True
-    _attr_translation_key = "opendisplay_ble_firmware"
+    _attr_translation_key = "firmware"
     _attr_device_class = UpdateDeviceClass.FIRMWARE
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_supported_features = UpdateEntityFeature.RELEASE_NOTES

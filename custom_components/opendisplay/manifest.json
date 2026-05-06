@@ -19,12 +19,6 @@
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/OpenDisplay-org/Home_Assistant_Integration/issues",
-  "preview_features": {
-    "opendisplay_ble_updates": {
-      "learn_more_url": "https://github.com/OpenDisplay-org/Firmware",
-      "report_issue_url": "https://github.com/OpenDisplay-org/Home_Assistant_Integration/issues"
-    }
-  },
   "requirements": [
     "odl-renderer==0.5.7",
     "py-atc-ble-oepl==0.5.0",
