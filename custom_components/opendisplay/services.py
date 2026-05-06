@@ -249,7 +249,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             protocol_type = "atc"
             for entry in hass.config_entries.async_entries(DOMAIN):
                 rd = getattr(entry, "runtime_data", None)
-                if isinstance(rd, OpenDisplayBLERuntimeData) and rd.mac_address.upper() == mac:
+                if isinstance(rd, OpenDisplayBLERuntimeData) and entry.unique_id.upper() == mac:
                     protocol_type = rd.protocol_type
                     break
 
