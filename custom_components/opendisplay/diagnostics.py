@@ -60,8 +60,8 @@ async def async_get_config_entry_diagnostics(
     if isinstance(runtime_data, OpenDisplayBLERuntimeData):
         diag["device_type"] = "ble"
         diag["ble"] = {
-            "mac_address": _redact_mac(runtime_data.mac_address),
-            "name": _redact_name_if_mac(runtime_data.name, runtime_data.mac_address),
+            "mac_address": _redact_mac(entry.unique_id),
+            "name": _redact_name_if_mac(entry.title, entry.unique_id),
             "protocol_type": runtime_data.protocol_type,
             "device_config": async_redact_data(_asdict(runtime_data.device_config), TO_REDACT),
             "sensor_count": len(runtime_data.sensors),

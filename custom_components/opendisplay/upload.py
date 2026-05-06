@@ -262,8 +262,7 @@ async def upload_to_opendisplay(
 
     encryption_key: bytes | None = None
     for entry in hass.config_entries.async_entries(DOMAIN):
-        if (entry.data.get("device_type") == "ble"
-                and entry.data.get("mac_address", "").upper() == mac):
+        if entry.unique_id and entry.unique_id.upper() == mac:
             raw = entry.data.get("encryption_key")
             if raw and len(raw) == 32:
                 try:
