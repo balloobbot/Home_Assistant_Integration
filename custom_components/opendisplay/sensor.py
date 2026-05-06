@@ -33,7 +33,6 @@ _LOGGER = logging.getLogger(__name__)
 class OpenDisplaySensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[dict], Any] | None = None
     attr_fn: Callable[[dict], dict] | None = None
-    entity_registry_enabled_default: bool = True
 
 
 BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
@@ -43,6 +42,8 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda data: data.get("temperature"),
     ),
     OpenDisplaySensorEntityDescription(
@@ -51,6 +52,7 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: data.get("battery_percentage"),
     ),
     OpenDisplaySensorEntityDescription(
@@ -87,8 +89,6 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
 class OpenDisplayBLESensor(OpenDisplayBLEEntity, SensorEntity):
     """BLE sensor entity for OpenDisplay devices."""
 
-    _attr_entity_registry_enabled_default = True
-
     def __init__(
             self,
             hass: HomeAssistant,
@@ -99,7 +99,7 @@ class OpenDisplayBLESensor(OpenDisplayBLEEntity, SensorEntity):
         self._hass = hass
         self._description = description
         self._sensor_data = {}
-        self._attr_entity_registry_enabled_default = description.entity_registry_enabled_default
+        self.entity_description = description
         self._attr_translation_key = description.key
 
     @property
