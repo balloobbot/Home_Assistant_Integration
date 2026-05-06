@@ -119,7 +119,7 @@ class OpenDisplayBleUpdateEntity(OpenDisplayBLEEntity, UpdateEntity):
             return str(fw)
 
         from homeassistant.helpers import device_registry as dr
-        from homeassistant.components.bluetooth import CONNECTION_BLUETOOTH
+        from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 
         device_registry = dr.async_get(self.hass)
         device = device_registry.async_get_device(
@@ -172,7 +172,7 @@ class OpenDisplayBleUpdateEntity(OpenDisplayBLEEntity, UpdateEntity):
 
             tag = data.get("tag_name") or data.get("name")
             if not tag:
-                _LOGGER.debug("No tag_name/name in GitHub response for %s", self._mac)
+                _LOGGER.debug("No tag_name/name in GitHub response for %s", self._entry.unique_id)
                 return
 
             normalized = tag[1:] if tag.startswith("v") else tag

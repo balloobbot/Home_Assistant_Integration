@@ -22,7 +22,7 @@ class OpenDisplayBLEEntity(Entity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        from homeassistant.components.bluetooth import CONNECTION_BLUETOOTH
+        from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
         from opendisplay import GlobalConfig
 
         runtime = self._entry.runtime_data

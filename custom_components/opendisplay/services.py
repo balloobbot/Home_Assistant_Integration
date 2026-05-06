@@ -133,7 +133,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         ]
 
     async def get_entity_id_from_device_id(device_id: str) -> str:
-        from homeassistant.components.bluetooth import CONNECTION_BLUETOOTH
+        from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 
         device_registry = dr.async_get(hass)
         device = device_registry.async_get(device_id)

@@ -30,35 +30,6 @@ async def async_migrate_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry
 
         old_uid = entry.unique_id or ""
         new_uid = old_uid.removeprefix("opendisplay_ble_")
-
-        new_data = {
-            k: v for k, v in entry.data.items()
-            if k not in ("mac_address", "name", "device_type")
-        }
-
-        entity_registry = er.async_get(hass)
-        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
-            if entity.unique_id and entity.unique_id.startswith("opendisplay_ble_"):
-                new_entity_uid = entity.unique_id.removeprefix("opendisplay_ble_")
-                entity_registry.async_update_entity(
-                    entity.entity_id, new_unique_id=new_entity_uid
-                )
-
-        hass.config_entries.async_update_entry(
-            entry, unique_id=new_uid, data=new_data, version=2
-        )
-        _LOGGER.info("Migration complete for %s (unique_id: %s -> %s)", entry.entry_id, old_uid, new_uid)
-
-    return True
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) -> bool:
-    """Migrate config entry from VERSION 1 to VERSION 2."""
-    if entry.version == 1:
-        _LOGGER.info("Migrating OpenDisplay entry %s from version 1 to 2", entry.entry_id)
-
-        old_uid = entry.unique_id or ""
-        new_uid = old_uid.removeprefix("opendisplay_ble_")
         new_data = {
             k: v for k, v in entry.data.items()
             if k not in ("mac_address", "name", "device_type")
@@ -270,7 +241,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
                 return
 
             if advertising_data.fw_version:
-                from homeassistant.components.bluetooth import CONNECTION_BLUETOOTH
+                from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
                 device_registry = dr.async_get(hass)
                 device_entry = device_registry.async_get_device(
                     connections={(CONNECTION_BLUETOOTH, mac_address)}
