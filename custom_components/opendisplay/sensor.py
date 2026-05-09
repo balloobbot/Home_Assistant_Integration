@@ -122,7 +122,6 @@ async def async_setup_entry(
 ) -> None:
     entry_data = entry.runtime_data
     coordinator = entry_data.coordinator
-    protocol_type = entry_data.protocol_type
     device_config = entry_data.device_config
 
     from opendisplay import GlobalConfig
@@ -130,7 +129,7 @@ async def async_setup_entry(
     sensors = []
     for description in BLE_SENSOR_TYPES:
         if description.key in ("battery_percentage", "battery_voltage"):
-            if protocol_type == "open_display" and isinstance(device_config, GlobalConfig):
+            if isinstance(device_config, GlobalConfig):
                 if device_config.power:
                     pm = device_config.power.power_mode
                     power_mode = pm.value if hasattr(pm, "value") else int(pm)

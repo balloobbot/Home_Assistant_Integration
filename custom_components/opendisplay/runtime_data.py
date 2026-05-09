@@ -16,7 +16,6 @@ class OpenDisplayBLERuntimeData:
     """Runtime data for BLE device entries"""
 
     device_config: "GlobalConfig | DeviceCapabilities"
-    protocol_type: str
     coordinator: "OpenDisplayBLECoordinator"
 
 

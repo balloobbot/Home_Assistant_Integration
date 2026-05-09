@@ -126,7 +126,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
 
     mac_address = entry.unique_id
     name = entry.title
-    protocol_type = entry.data.get("protocol_type", "atc")
 
     # Require device to be advertising before attempting connection
     if not bluetooth.async_address_present(hass, mac_address, connectable=False):
@@ -135,6 +134,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
             translation_key="ble_device_not_detected",
             translation_placeholders={"name": name, "mac_address": mac_address},
         )
+
+    # Detect protocol from live advertisement; fall back to stored value
+    from opendisplay import MANUFACTURER_ID as OD_MANUFACTURER_ID
+    from py_atc_ble_oepl.protocol.constants import MANUFACTURER_ID as ATC_MANUFACTURER_ID
+    service_info = bluetooth.async_last_service_info(hass, mac_address, connectable=False)
+    if service_info and OD_MANUFACTURER_ID in service_info.manufacturer_data:
+        protocol_type = "open_display"
+    elif service_info and ATC_MANUFACTURER_ID in service_info.manufacturer_data:
+        protocol_type = "atc"
+    else:
+        protocol_type = entry.data.get("protocol_type", "atc")
 
     # Interrogate device for full typed config
     ble_device = async_ble_device_from_address(hass, mac_address, connectable=True)
@@ -166,10 +176,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
             translation_placeholders={"name": name, "mac_address": mac_address},
         ) from err
 
-    coordinator = OpenDisplayBLECoordinator(hass, mac_address, protocol_type)
+    coordinator = OpenDisplayBLECoordinator(hass, mac_address)
     ble_data = OpenDisplayBLERuntimeData(
         device_config=device_config,
-        protocol_type=protocol_type,
         coordinator=coordinator,
     )
     entry.runtime_data = ble_data

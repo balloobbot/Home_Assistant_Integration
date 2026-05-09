@@ -246,14 +246,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 )
 
             mac = get_mac_from_entity_id(entity_id)
-            protocol_type = "atc"
+            is_open_display = False
             for entry in hass.config_entries.async_entries(DOMAIN):
                 rd = getattr(entry, "runtime_data", None)
                 if isinstance(rd, OpenDisplayBLERuntimeData) and entry.unique_id.upper() == mac:
-                    protocol_type = rd.protocol_type
+                    from opendisplay import GlobalConfig
+                    is_open_display = isinstance(rd.device_config, GlobalConfig)
                     break
 
-            if protocol_type == "open_display":
+            if is_open_display:
                 await ble_upload_queue.add_to_queue(
                     upload_to_opendisplay, hass, entity_id, image_data, dither_mode, refresh_type
                 )

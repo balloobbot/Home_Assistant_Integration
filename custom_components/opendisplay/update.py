@@ -30,7 +30,8 @@ async def async_setup_entry(
     entry_data = entry.runtime_data
     if not isinstance(entry_data, OpenDisplayBLERuntimeData):
         return
-    if entry_data.protocol_type != "open_display":
+    from opendisplay import GlobalConfig
+    if not isinstance(entry_data.device_config, GlobalConfig):
         return
     async_add_entities([OpenDisplayBleUpdateEntity(hass, entry, entry_data)])
 

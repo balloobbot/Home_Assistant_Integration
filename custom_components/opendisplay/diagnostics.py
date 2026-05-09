@@ -58,13 +58,14 @@ async def async_get_config_entry_diagnostics(
 
     runtime_data = entry.runtime_data
     if isinstance(runtime_data, OpenDisplayBLERuntimeData):
+        from opendisplay import GlobalConfig
+        protocol_type = "open_display" if isinstance(runtime_data.device_config, GlobalConfig) else "atc"
         diag["device_type"] = "ble"
         diag["ble"] = {
             "mac_address": _redact_mac(entry.unique_id),
             "name": _redact_name_if_mac(entry.title, entry.unique_id),
-            "protocol_type": runtime_data.protocol_type,
+            "protocol_type": protocol_type,
             "device_config": async_redact_data(_asdict(runtime_data.device_config), TO_REDACT),
-            "sensor_count": len(runtime_data.sensors),
         }
 
     return diag

@@ -28,7 +28,7 @@ class BLESensorData:
 
 class OpenDisplayBLECoordinator(PassiveBluetoothDataUpdateCoordinator):
 
-    def __init__(self, hass: HomeAssistant, address: str, protocol_type: str) -> None:
+    def __init__(self, hass: HomeAssistant, address: str) -> None:
         super().__init__(
             hass,
             _LOGGER,
@@ -36,7 +36,6 @@ class OpenDisplayBLECoordinator(PassiveBluetoothDataUpdateCoordinator):
             BluetoothScanningMode.ACTIVE,
             connectable=True,
         )
-        self.protocol_type = protocol_type
         self.data: BLESensorData | None = None
 
     @callback
@@ -45,9 +44,12 @@ class OpenDisplayBLECoordinator(PassiveBluetoothDataUpdateCoordinator):
         service_info: BluetoothServiceInfoBleak,
         change: BluetoothChange,
     ) -> None:
-        if self.protocol_type == "open_display":
+        from opendisplay import MANUFACTURER_ID as OD_MANUFACTURER_ID
+        from py_atc_ble_oepl.protocol.constants import MANUFACTURER_ID as ATC_MANUFACTURER_ID
+
+        if OD_MANUFACTURER_ID in service_info.manufacturer_data:
             self._handle_open_display(service_info)
-        else:
+        elif ATC_MANUFACTURER_ID in service_info.manufacturer_data:
             self._handle_atc(service_info)
         super()._async_handle_bluetooth_event(service_info, change)
 

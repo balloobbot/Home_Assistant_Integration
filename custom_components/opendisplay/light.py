@@ -34,7 +34,8 @@ async def async_setup_entry(
         return
 
     # LED only supported on ATC devices
-    if entry_data.protocol_type == "open_display":
+    from opendisplay import GlobalConfig
+    if isinstance(entry_data.device_config, GlobalConfig):
         return
 
     async_add_entities([OpenDisplayBLELight(hass=hass, entry=entry)])
