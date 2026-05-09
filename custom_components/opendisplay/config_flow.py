@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 from typing import Any, Final
-import asyncio
 
 import voluptuous as vol
 from habluetooth.models import BluetoothServiceInfoBleak
 from homeassistant import config_entries
-from homeassistant.core import callback
+from homeassistant.components.bluetooth import async_ble_device_from_address
 
 from .const import DOMAIN, CONF_ENCRYPTION_KEY
 import logging
@@ -23,6 +22,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered_device: dict[str, Any] = {}
+        self._device_metadata: dict[str, Any] | None = None
         self._encryption_key: str | None = None
 
     async def async_step_bluetooth(
@@ -82,143 +82,121 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "protocol_type": protocol_type,
         }
 
-        self.context["title_placeholders"] = {"name": self._discovered_device["name"]}
+        self.context["title_placeholders"] = {"name": device_name}
+
+        try:
+            await self._async_interrogate(discovery_info.address)
+        except _AuthRequired:
+            return await self.async_step_encryption_key()
+        except Exception as err:
+            _LOGGER.error("BLE interrogation failed during discovery of %s: %s", discovery_info.address, err)
+            return self.async_abort(reason="invalid_advertising_data")
+
         return await self.async_step_bluetooth_confirm()
+
+    async def _async_interrogate(
+        self, mac: str, encryption_key: bytes | None = None
+    ) -> None:
+        """Connect to device via BLE, read config, and store device_metadata."""
+        ble_device = async_ble_device_from_address(self.hass, mac, connectable=True)
+        if ble_device is None:
+            raise Exception(f"No connectable BLE device found for {mac}")
+
+        protocol_type = self._discovered_device["protocol_type"]
+        hw_type = self._discovered_device["hw_type"]
+
+        if protocol_type == "atc":
+            from py_atc_ble_oepl import ATCDevice
+            from py_atc_ble_oepl.models.device_types import get_device_type_name
+
+            async with ATCDevice(mac, ble_device, auto_interrogate=False) as device:
+                caps = await device.interrogate()
+
+            model_name = (
+                get_device_type_name(device.device_config.screen_type)
+                if device.device_config
+                else f"ATC 0x{hw_type:04X}"
+            )
+            self._device_metadata = {
+                "hw_type": hw_type,
+                "fw_version": self._discovered_device["fw_version"],
+                "width": caps.width,
+                "height": caps.height,
+                "color_scheme": caps.color_scheme,
+                "model_name": model_name,
+            }
+        else:
+            from opendisplay import OpenDisplayDevice, AuthenticationRequiredError
+            from opendisplay.exceptions import AuthenticationFailedError
+
+            try:
+                async with OpenDisplayDevice(
+                    mac_address=mac, ble_device=ble_device, encryption_key=encryption_key
+                ) as device:
+                    fw = await device.read_firmware_version()
+            except AuthenticationRequiredError:
+                raise _AuthRequired()
+            except AuthenticationFailedError:
+                raise _AuthFailed()
+
+            device_config = device.config
+            if not device_config or not device_config.displays:
+                raise ValueError("Invalid device config: no displays")
+
+            display = device_config.displays[0]
+            size = (
+                f'{display.screen_diagonal_inches:.1f}"'
+                if display.screen_diagonal_inches is not None
+                else f"{display.pixel_width}x{display.pixel_height}"
+            )
+            cs_enum = display.color_scheme_enum
+            cs_name = str(cs_enum) if isinstance(cs_enum, int) else cs_enum.name
+
+            power_mode = 1
+            if device_config.power:
+                pm = device_config.power.power_mode
+                power_mode = pm.value if hasattr(pm, "value") else int(pm)
+
+            self._device_metadata = {
+                "width": display.pixel_width,
+                "height": display.pixel_height,
+                "color_scheme": display.color_scheme,
+                "model_name": f"{size} {cs_name}",
+                "fw_version": f"{fw['major']}.{fw['minor']}",
+                "power_mode": power_mode,
+            }
 
     async def async_step_bluetooth_confirm(
             self, user_input: dict[str, Any] | None = None
     ):
-        """Confirm discovery of Bluetooth device."""
-        if user_input is not None:
-            try:
-                hw_type = self._discovered_device["hw_type"]
-                protocol_type = self._discovered_device["protocol_type"]
-                mac = self._discovered_device["address"]
+        """Confirm discovery — interrogation already done in async_step_bluetooth."""
+        if user_input is None:
+            meta = self._device_metadata or {}
+            battery_mv = self._discovered_device.get("battery_mv", 0)
+            adv_version = self._discovered_device.get("version", 0)
+            return self.async_show_form(
+                step_id="bluetooth_confirm",
+                description_placeholders={
+                    "name": self._discovered_device["name"],
+                    "address": self._discovered_device["address"],
+                    "rssi": str(self._discovered_device["rssi"]),
+                    "battery": f"{battery_mv / 1000:.2f}V" if battery_mv > 0 else "Unknown",
+                    "fw_version": str(meta.get("fw_version", "Unknown")),
+                    "config_version": str(adv_version) if adv_version > 0 else "Unknown",
+                },
+            )
 
-                if protocol_type == "atc":
-                    from homeassistant.components.bluetooth import async_ble_device_from_address
-                    from py_atc_ble_oepl import ATCDevice
-                    from py_atc_ble_oepl.models.device_types import get_device_type_name
-
-                    ble_device = async_ble_device_from_address(self.hass, mac, connectable=True)
-                    async with ATCDevice(mac, ble_device, auto_interrogate=False) as device:
-                        caps = await device.interrogate()
-
-                    model_name = (
-                        get_device_type_name(device.device_config.screen_type)
-                        if device.device_config
-                        else f"ATC 0x{hw_type:04X}"
-                    )
-                    device_metadata = {
-                        "hw_type": hw_type,
-                        "fw_version": self._discovered_device["fw_version"],
-                        "width": caps.width,
-                        "height": caps.height,
-                        "color_scheme": caps.color_scheme,
-                        "model_name": model_name,
-                    }
-                else:
-                    from homeassistant.components.bluetooth import async_ble_device_from_address
-                    from opendisplay import (
-                        OpenDisplayDevice,
-                        AuthenticationRequiredError,
-                        AuthenticationFailedError,
-                    )
-
-                    encryption_key: bytes | None = None
-                    if self._encryption_key:
-                        encryption_key = bytes.fromhex(self._encryption_key)
-
-                    ble_device = async_ble_device_from_address(self.hass, mac, connectable=True)
-                    try:
-                        async with OpenDisplayDevice(
-                            mac_address=mac, ble_device=ble_device, encryption_key=encryption_key
-                        ) as device:
-                            fw = await device.read_firmware_version()
-                    except AuthenticationRequiredError:
-                        return await self.async_step_encryption_key()
-                    except AuthenticationFailedError:
-                        return self.async_show_form(
-                            step_id="bluetooth_confirm",
-                            errors={"base": "invalid_auth"},
-                            description_placeholders={
-                                "name": self._discovered_device["name"],
-                                "address": self._discovered_device["address"],
-                                "rssi": str(self._discovered_device["rssi"]),
-                                "battery": f"{self._discovered_device['battery_mv']/1000:.2f}V" if self._discovered_device["battery_mv"] > 0 else "Unknown",
-                                "fw_version": "Unknown",
-                                "config_version": "Unknown",
-                            },
-                        )
-
-                    device_config = device.config
-                    if not device_config or not device_config.displays:
-                        raise ValueError("Invalid device config: no displays")
-
-                    display = device_config.displays[0]
-                    if display.screen_diagonal_inches is not None:
-                        size = f'{display.screen_diagonal_inches:.1f}"'
-                    else:
-                        size = f"{display.pixel_width}x{display.pixel_height}"
-                    cs_enum = display.color_scheme_enum
-                    cs_name = str(cs_enum) if isinstance(cs_enum, int) else cs_enum.name
-                    model_name = f"{size} {cs_name}"
-
-                    power_mode = 1
-                    if device_config.power:
-                        pm = device_config.power.power_mode
-                        power_mode = pm.value if hasattr(pm, "value") else int(pm)
-
-                    device_metadata = {
-                        "width": display.pixel_width,
-                        "height": display.pixel_height,
-                        "color_scheme": display.color_scheme,
-                        "model_name": model_name,
-                        "fw_version": f"{fw['major']}.{fw['minor']}",
-                        "power_mode": power_mode,
-                    }
-
-                entry_data: dict[str, Any] = {
-                    "device_metadata": device_metadata,
-                    "protocol_type": self._discovered_device["protocol_type"],
-                    "send_welcome_image": True,
-                }
-                if self._encryption_key:
-                    entry_data[CONF_ENCRYPTION_KEY] = self._encryption_key
-
-                return self.async_create_entry(
-                    title=self._discovered_device["name"],
-                    data=entry_data,
-                )
-
-            except Exception as e:
-                _LOGGER.error("Error during device interrogation: %s", e)
-                return self.async_show_form(
-                    step_id="bluetooth_confirm",
-                    errors={"base": "interrogation_failed"},
-                    description_placeholders={
-                        "name": self._discovered_device["name"],
-                        "address": self._discovered_device["address"],
-                        "rssi": str(self._discovered_device["rssi"]),
-                        "battery": f"{self._discovered_device['battery_mv']/1000:.2f}V" if self._discovered_device["battery_mv"] > 0 else "Unknown",
-                        "fw_version": str(self._discovered_device["fw_version"]) if self._discovered_device["fw_version"] > 0 else "Unknown",
-                        "config_version": str(self._discovered_device["version"]) if self._discovered_device["version"] > 0 else "Unknown",
-                        "error": str(e),
-                    },
-                )
-
-        description_placeholders = {
-            "name": self._discovered_device["name"],
-            "address": self._discovered_device["address"],
-            "rssi": str(self._discovered_device["rssi"]),
-            "battery": f"{self._discovered_device['battery_mv']/1000:.2f}V" if self._discovered_device["battery_mv"] > 0 else "Unknown",
-            "fw_version": str(self._discovered_device["fw_version"]) if self._discovered_device["fw_version"] > 0 else "Unknown",
-            "config_version": str(self._discovered_device["version"]) if self._discovered_device["version"] > 0 else "Unknown",
+        entry_data: dict[str, Any] = {
+            "device_metadata": self._device_metadata,
+            "protocol_type": self._discovered_device["protocol_type"],
+            "send_welcome_image": True,
         }
+        if self._encryption_key:
+            entry_data[CONF_ENCRYPTION_KEY] = self._encryption_key
 
-        return self.async_show_form(
-            step_id="bluetooth_confirm",
-            description_placeholders=description_placeholders,
+        return self.async_create_entry(
+            title=self._discovered_device["name"],
+            data=entry_data,
         )
 
     async def async_step_encryption_key(
@@ -232,8 +210,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not raw_key or not all(c in "0123456789abcdef" for c in raw_key) or len(raw_key) != 32:
                 errors[CONF_ENCRYPTION_KEY] = "invalid_key_format"
             else:
-                self._encryption_key = raw_key
-                return await self.async_step_bluetooth_confirm(user_input={})
+                try:
+                    await self._async_interrogate(
+                        self._discovered_device["address"],
+                        bytes.fromhex(raw_key),
+                    )
+                except _AuthFailed:
+                    errors[CONF_ENCRYPTION_KEY] = "invalid_auth"
+                except Exception as err:
+                    _LOGGER.error("Interrogation failed after key entry: %s", err)
+                    errors["base"] = "interrogation_failed"
+                else:
+                    self._encryption_key = raw_key
+                    return await self.async_step_bluetooth_confirm()
 
         return self.async_show_form(
             step_id="encryption_key",
@@ -241,3 +230,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"name": self._discovered_device.get("name", "")},
             errors=errors,
         )
+
+
+class _AuthRequired(Exception):
+    """Device requires an encryption key."""
+
+
+class _AuthFailed(Exception):
+    """Encryption key was rejected by the device."""
