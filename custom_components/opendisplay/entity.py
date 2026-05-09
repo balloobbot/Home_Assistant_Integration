@@ -33,7 +33,8 @@ class OpenDisplayBLEEntity(Entity):
             display = device_config.displays[0] if device_config.displays else None
             width = display.pixel_width if display else 0
             height = display.pixel_height if display else 0
-            configuration_url = OPENDISPLAY_CONFIG_URL
+            key = self._entry.data.get("encryption_key")
+            configuration_url = f"{OPENDISPLAY_CONFIG_URL}?key={key}" if key else OPENDISPLAY_CONFIG_URL
         else:
             width = device_config.width
             height = device_config.height
