@@ -10,6 +10,7 @@ from homeassistant.helpers import entity_registry as er, device_registry as dr
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.helpers.typing import ConfigType
 from .const import DOMAIN
+from .coordinator import OpenDisplayBLECoordinator
 from .runtime_data import OpenDisplayConfigEntry, OpenDisplayBLERuntimeData
 from .services import async_setup_services
 
@@ -165,17 +166,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
             translation_placeholders={"name": name, "mac_address": mac_address},
         ) from err
 
-    if protocol_type == "open_display":
-        from opendisplay.protocol import MANUFACTURER_ID as OD_MANUFACTURER_ID
-        adv_manufacturer_id = OD_MANUFACTURER_ID
-    else:
-        from py_atc_ble_oepl.protocol.constants import MANUFACTURER_ID as ATC_MANUFACTURER_ID
-        adv_manufacturer_id = ATC_MANUFACTURER_ID
-
+    coordinator = OpenDisplayBLECoordinator(hass, mac_address, protocol_type)
     ble_data = OpenDisplayBLERuntimeData(
         device_config=device_config,
         protocol_type=protocol_type,
-        sensors={},
+        coordinator=coordinator,
     )
     entry.runtime_data = ble_data
 
@@ -192,75 +187,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
                 )
             )
 
-    def _ble_device_found(
-            service_info: bluetooth.BluetoothServiceInfoBleak,
-            change: bluetooth.BluetoothChange,
-    ) -> None:
-        """Handle BLE advertising data updates."""
-        if service_info.address != mac_address:
-            return
-
-        if protocol_type == "open_display":
-            from opendisplay import parse_advertisement, MANUFACTURER_ID as OD_MANUFACTURER_ID
-            from opendisplay.battery import voltage_to_percent, CapacityEstimator
-
-            manufacturer_data = service_info.manufacturer_data.get(OD_MANUFACTURER_ID)
-            if not manufacturer_data:
-                return
-            try:
-                adv = parse_advertisement(manufacturer_data)
-            except Exception as err:
-                _LOGGER.debug("Failed to parse OpenDisplay advertisement for %s: %s", mac_address, err)
-                return
-
-            sensor_data = {
-                "battery_percentage": voltage_to_percent(adv.battery_mv, CapacityEstimator.LI_ION),
-                "battery_voltage": adv.battery_mv if adv.battery_mv > 0 else None,
-                "rssi": service_info.rssi,
-                "last_seen": datetime.now(timezone.utc),
-                "temperature": adv.temperature_c,
-            }
-        else:
-            from py_atc_ble_oepl.protocol.constants import MANUFACTURER_ID as ATC_MANUFACTURER_ID
-            from py_atc_ble_oepl.protocol.atc import ATCProtocol
-
-            manufacturer_data = service_info.manufacturer_data.get(ATC_MANUFACTURER_ID)
-            if not manufacturer_data:
-                _LOGGER.debug(
-                    "No manufacturer data for 0x%04X on %s",
-                    ATC_MANUFACTURER_ID,
-                    mac_address,
-                )
-                return
-            try:
-                advertising_data = ATCProtocol().parse_advertising_data(manufacturer_data)
-                if not advertising_data:
-                    return
-            except Exception as err:
-                _LOGGER.debug("Failed to parse advertising data for %s: %s", mac_address, err, exc_info=True)
-                return
-
-            if advertising_data.fw_version:
-                from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
-                device_registry = dr.async_get(hass)
-                device_entry = device_registry.async_get_device(
-                    connections={(CONNECTION_BLUETOOTH, mac_address)}
-                )
-                new_fw_string = str(advertising_data.fw_version)
-                if device_entry and device_entry.sw_version != new_fw_string:
-                    device_registry.async_update_device(device_entry.id, sw_version=new_fw_string)
-
-            sensor_data = {
-                "battery_percentage": advertising_data.battery_pct,
-                "battery_voltage": advertising_data.battery_mv if advertising_data.battery_mv > 0 else None,
-                "rssi": service_info.rssi,
-                "last_seen": datetime.now(timezone.utc),
-                "temperature": advertising_data.temperature,
-            }
-
-        for sensor in ble_data.sensors.values():
-            sensor.update_from_advertising_data(sensor_data)
-
     # Remove deprecated clock mode button entities
     removed_clock_buttons = await async_remove_clock_mode_buttons(hass, entry)
     if removed_clock_buttons:
@@ -271,18 +197,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenDisplayConfigEntry) 
     if removed_invalid:
         _LOGGER.info("Removed invalid BLE entities: %s", removed_invalid)
 
-    # Set up BLE-specific platforms FIRST (before callback registration)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Register BLE advertising listener with protocol-specific manufacturer ID
-    unregister_callback = bluetooth.async_register_callback(
-        hass,
-        _ble_device_found,
-        {"manufacturer_id": adv_manufacturer_id},
-        bluetooth.BluetoothScanningMode.ACTIVE,
-    )
-
-    entry.async_on_unload(unregister_callback)
+    entry.async_on_unload(coordinator.async_start())
 
     return True
 
