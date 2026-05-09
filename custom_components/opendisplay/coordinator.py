@@ -26,7 +26,7 @@ class BLESensorData:
     temperature: float | None = None
 
 
-class OpenDisplayBLECoordinator(PassiveBluetoothDataUpdateCoordinator[BLESensorData | None]):
+class OpenDisplayBLECoordinator(PassiveBluetoothDataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, address: str, protocol_type: str) -> None:
         super().__init__(
