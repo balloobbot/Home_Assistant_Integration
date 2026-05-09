@@ -5,6 +5,9 @@ PARALLEL_UPDATES = 0
 from dataclasses import dataclass
 from typing import Callable, Any
 
+from homeassistant.components.bluetooth.passive_update_coordinator import (
+    PassiveBluetoothCoordinatorEntity,
+)
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
@@ -18,12 +21,13 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 import logging
 
-from .entity import OpenDisplayBLEEntity
+from .coordinator import OpenDisplayBLECoordinator, BLESensorData
 from .runtime_data import OpenDisplayConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,8 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(kw_only=True, frozen=True)
 class OpenDisplaySensorEntityDescription(SensorEntityDescription):
-    value_fn: Callable[[dict], Any] | None = None
-    attr_fn: Callable[[dict], dict] | None = None
+    value_fn: Callable[[BLESensorData], Any] | None = None
 
 
 BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
@@ -43,7 +46,7 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("temperature"),
+        value_fn=lambda data: data.temperature,
     ),
     OpenDisplaySensorEntityDescription(
         key="battery_percentage",
@@ -52,7 +55,7 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data: data.get("battery_percentage"),
+        value_fn=lambda data: data.battery_percentage,
     ),
     OpenDisplaySensorEntityDescription(
         key="battery_voltage",
@@ -62,7 +65,7 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfElectricPotential.MILLIVOLT,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("battery_voltage"),
+        value_fn=lambda data: data.battery_voltage,
     ),
     OpenDisplaySensorEntityDescription(
         key="rssi",
@@ -72,7 +75,7 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("rssi"),
+        value_fn=lambda data: data.rssi,
     ),
     OpenDisplaySensorEntityDescription(
         key="last_seen",
@@ -80,64 +83,36 @@ BLE_SENSOR_TYPES: tuple[OpenDisplaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: data.get("last_seen"),
+        value_fn=lambda data: data.last_seen,
     ),
 )
 
 
-class OpenDisplayBLESensor(OpenDisplayBLEEntity, SensorEntity):
+class OpenDisplayBLESensor(PassiveBluetoothCoordinatorEntity[OpenDisplayBLECoordinator], SensorEntity):
     """BLE sensor entity for OpenDisplay devices."""
 
-    def __init__(
-            self,
-            hass: HomeAssistant,
-            entry: OpenDisplayConfigEntry,
-            description: OpenDisplaySensorEntityDescription,
-    ) -> None:
-        super().__init__(entry)
-        self._hass = hass
-        self._description = description
-        self._sensor_data = {}
-        self.entity_description = description
-        self._attr_translation_key = description.key
+    entity_description: OpenDisplaySensorEntityDescription
 
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry.unique_id}_{self._description.key}"
+    def __init__(
+        self,
+        coordinator: OpenDisplayBLECoordinator,
+        description: OpenDisplaySensorEntityDescription,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.address}_{description.key}"
+        self._attr_translation_key = description.key
+        self._attr_device_info = DeviceInfo(
+            connections={(CONNECTION_BLUETOOTH, coordinator.address)},
+        )
 
     @property
     def native_value(self) -> StateType:
-        if self._description.value_fn:
-            return self._description.value_fn(self._sensor_data)
-        return self._sensor_data.get(self._description.key)
-
-    @property
-    def native_unit_of_measurement(self) -> str | None:
-        return self._description.native_unit_of_measurement
-
-    @property
-    def device_class(self) -> SensorDeviceClass | None:
-        return self._description.device_class
-
-    @property
-    def state_class(self) -> SensorStateClass | None:
-        return self._description.state_class
-
-    @property
-    def entity_category(self) -> EntityCategory | None:
-        return self._description.entity_category
-
-    def update_from_advertising_data(self, data: dict) -> None:
-        self._sensor_data = data
-        if self.hass is not None:
-            self.async_write_ha_state()
-
-    async def async_added_to_hass(self) -> None:
-        if self._sensor_data:
-            self.async_write_ha_state()
-
-    async def async_update(self) -> None:
-        pass
+        if self.coordinator.data is None:
+            return None
+        if self.entity_description.value_fn:
+            return self.entity_description.value_fn(self.coordinator.data)
+        return None
 
 
 async def async_setup_entry(
@@ -146,10 +121,11 @@ async def async_setup_entry(
         async_add_entities: AddEntitiesCallback,
 ) -> None:
     entry_data = entry.runtime_data
+    coordinator = entry_data.coordinator
     protocol_type = entry_data.protocol_type
+    device_config = entry_data.device_config
 
     from opendisplay import GlobalConfig
-    device_config = entry_data.device_config
 
     sensors = []
     for description in BLE_SENSOR_TYPES:
@@ -160,13 +136,6 @@ async def async_setup_entry(
                     power_mode = pm.value if hasattr(pm, "value") else int(pm)
                     if power_mode not in (1, 3):
                         continue
-
-        sensor = OpenDisplayBLESensor(
-            hass=hass,
-            entry=entry,
-            description=description,
-        )
-        sensors.append(sensor)
-        entry_data.sensors[description.key] = sensor
+        sensors.append(OpenDisplayBLESensor(coordinator=coordinator, description=description))
 
     async_add_entities(sensors)
